@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "clankerfaker",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-07-01",
+  "d1_databases": [
+    {
+      "binding": "REPLAY_DB",
+      "database_name": "clankerfaker-replays",
+      "database_id": "c3252cb0-1770-4c0b-9ecf-d7186131427b",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
