@@ -1,11 +1,13 @@
 import type {
   BotNavigationNode,
+  AlarmLight,
   CoverZone,
   DecorPoint,
   MapLayer,
   MapZone,
   MovingWalkway,
   Rect,
+  TaskStep,
   Vector,
 } from "./types";
 
@@ -15,17 +17,48 @@ export const ACTOR_COUNT = 11;
 export const BOT_COUNT = 10;
 export const ACTOR_RADIUS = 15;
 export const ITEM_RADIUS = 7;
+export const ITEM_SPRITE_SIZE = 30;
 export const ITEM_COUNT = 15;
+export const ITEM_RESPAWN_MIN_SECONDS = 5;
+export const ITEM_RESPAWN_RANDOM_SECONDS = 4;
 export const REQUIRED_ITEMS = 3;
-export const ROUND_DURATION = 45;
+export const TASK_HOLD_DURATION = 0.72;
+export const TASK_TARGET_RADIUS = 27;
+export const ROUND_DURATION = 35;
 export const COUNTDOWN_SECONDS = 5;
 export const SNAPSHOT_INTERVAL = 0.1;
 export const HUMAN_SPEED = 112;
 export const BOT_BASE_SPEED = 104;
 export const ACTOR_SPRITE_SIZE = 34;
 export const ROBOT_SPRITE_ROTATION_OFFSET = -Math.PI / 2;
+export const SWEEPER_SPRITE_SIZE = 32;
+export const SWEEPER_SPRITE_ROTATION_OFFSET = -Math.PI / 2;
 export const ACTOR_HEADING_TURN_RATE = 7.8;
 export const BOT_HEADING_TURN_RATE = 5.2;
+export const ALARM_WARNING_DURATION = 1;
+export const ALARM_ACTIVE_DURATION = 3;
+export const ALARM_MIN_START_TIME = 10;
+export const ALARM_MAX_START_TIME = 22;
+export const SWEEPER_RADIUS = 12;
+export const SWEEPER_SPEED = 132;
+export const SWEEPER_STUN_DURATION = 3;
+export const SWEEPER_STUN_COOLDOWN = 4.75;
+export const SWEEPER_AVOID_RADIUS = 74;
+export const SWEEPER_AVOID_STRENGTH = 0.42;
+export const SWEEPER_RESPAWN_SAFE_RADIUS = 96;
+export const SWEEPER_RESPAWN_INVULNERABILITY = 1.4;
+export const SWEEPER_RESPAWN_EFFECT_DURATION = 0.85;
+export const SWEEPER_PATROL_POINTS: Vector[] = [
+  { x: 205, y: 360 },
+  { x: 420, y: 360 },
+  { x: 755, y: 360 },
+  { x: 790, y: 485 },
+  { x: 755, y: 595 },
+  { x: 545, y: 600 },
+  { x: 205, y: 595 },
+  { x: 170, y: 485 },
+  { x: 480, y: 480 },
+];
 
 export const OUTER_WALLS: Rect[] = [
   { x: 0, y: 0, width: 960, height: 34 },
@@ -352,6 +385,78 @@ export const COVER_ZONES: CoverZone[] = [
   { id: "central-tree-canopy", center: { x: 466, y: 293 }, radius: 66 },
 ];
 
+export const ALARM_LIGHTS: AlarmLight[] = [
+  {
+    id: "northWest",
+    position: { x: 54, y: 54 },
+    rallyPoint: { x: 104, y: 328 },
+  },
+  {
+    id: "northEast",
+    position: { x: 906, y: 54 },
+    rallyPoint: { x: 826, y: 176 },
+  },
+  {
+    id: "southWest",
+    position: { x: 54, y: 906 },
+    rallyPoint: { x: 168, y: 780 },
+  },
+  {
+    id: "southEast",
+    position: { x: 906, y: 906 },
+    rallyPoint: { x: 812, y: 856 },
+  },
+];
+
+export const TERMINAL_TASK_TARGETS: TaskStep[] = [
+  {
+    id: "terminal-upper-left",
+    kind: "terminal",
+    label: "Inspect terminal",
+    description: "Pause at a console long enough to complete the inspection.",
+    targetId: "terminal-upper-left",
+    position: { x: 150, y: 122 },
+    radius: TASK_TARGET_RADIUS,
+  },
+  {
+    id: "terminal-lab",
+    kind: "terminal",
+    label: "Inspect terminal",
+    description: "Pause at a console long enough to complete the inspection.",
+    targetId: "terminal-lab",
+    position: { x: 690, y: 144 },
+    radius: TASK_TARGET_RADIUS,
+  },
+  {
+    id: "terminal-office",
+    kind: "terminal",
+    label: "Inspect terminal",
+    description: "Pause at a console long enough to complete the inspection.",
+    targetId: "terminal-office",
+    position: { x: 168, y: 780 },
+    radius: TASK_TARGET_RADIUS,
+  },
+];
+
+export const ALARM_TASK_TARGETS: TaskStep[] = ALARM_LIGHTS.map((light) => ({
+  id: `alarm-${light.id}`,
+  kind: "alarm",
+  label: "Check alarm station",
+  description: "Stand near the alarm station until the check completes.",
+  targetId: light.id,
+  position: { ...light.rallyPoint },
+  radius: TASK_TARGET_RADIUS + 3,
+}));
+
+export const WALKWAY_TASK_TARGETS: TaskStep[] = MOVING_WALKWAYS.map((walkway) => ({
+  id: `ride-${walkway.id}`,
+  kind: "walkway",
+  label: "Ride a moving walkway",
+  description: "Stay on the highlighted moving walkway long enough to count the ride.",
+  targetId: walkway.id,
+  rect: { ...walkway.rect },
+}));
+
 export const COLLISION_RECTS: Rect[] = [
   ...OUTER_WALLS,
   ...INTERIOR_WALLS,
@@ -372,6 +477,7 @@ export const MAP_LAYER: MapLayer = {
   exit: EXIT_ZONE,
   decor: DECOR_POINTS,
   coverZones: COVER_ZONES,
+  alarmLights: ALARM_LIGHTS,
 };
 
 export const OBSTACLES: Rect[] = COLLISION_RECTS;

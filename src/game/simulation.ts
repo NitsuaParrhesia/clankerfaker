@@ -2,6 +2,11 @@ import {
   ACTOR_COUNT,
   ACTOR_HEADING_TURN_RATE,
   ACTOR_RADIUS,
+  ALARM_ACTIVE_DURATION,
+  ALARM_TASK_TARGETS,
+  ALARM_MAX_START_TIME,
+  ALARM_MIN_START_TIME,
+  ALARM_WARNING_DURATION,
   BOT_HEADING_TURN_RATE,
   BOT_COUNT,
   DECOR_POINTS,
@@ -11,10 +16,26 @@ import {
   HUMAN_SPEED,
   ITEM_COUNT,
   ITEM_RADIUS,
+  ITEM_RESPAWN_MIN_SECONDS,
+  ITEM_RESPAWN_RANDOM_SECONDS,
   MAP_LAYER,
   OBSTACLES,
   REQUIRED_ITEMS,
   ROUND_DURATION,
+  SWEEPER_AVOID_RADIUS,
+  SWEEPER_AVOID_STRENGTH,
+  SWEEPER_PATROL_POINTS,
+  SWEEPER_RADIUS,
+  SWEEPER_RESPAWN_INVULNERABILITY,
+  SWEEPER_RESPAWN_EFFECT_DURATION,
+  SWEEPER_RESPAWN_SAFE_RADIUS,
+  SWEEPER_SPEED,
+  SWEEPER_STUN_COOLDOWN,
+  SWEEPER_STUN_DURATION,
+  TASK_HOLD_DURATION,
+  TASK_TARGET_RADIUS,
+  TERMINAL_TASK_TARGETS,
+  WALKWAY_TASK_TARGETS,
 } from "./constants";
 import {
   botJitter,
@@ -30,13 +51,18 @@ import {
 } from "./botBehavior";
 import type {
   Actor,
+  AlarmLight,
+  AlarmState,
   BotBrain,
   BotNavigationNode,
   GameState,
   InputState,
   MapZoneId,
   MovingWalkway,
+  RoundTask,
   Rect,
+  TaskStep,
+  SweeperState,
   Vector,
 } from "./types";
 
@@ -45,12 +71,15 @@ const EMPTY_INPUT: InputState = {
   down: false,
   left: false,
   right: false,
+  moveX: 0,
+  moveY: 0,
 };
 
 const COLLISION_SKIN = 0.45;
 const COLLISION_EPSILON = 0.04;
 const MAX_COLLISION_RESOLUTION_STEPS = 6;
 const MAX_MOVEMENT_STEP = ACTOR_RADIUS * 0.45;
+const PUBLIC_TASK_STEPS_PER_ROUND = 1;
 const STICKY_BOT_ESCAPE_RECTS: Rect[] = [
   { x: 318, y: 96, width: 132, height: 222 },
 ];
@@ -58,6 +87,8 @@ const STICKY_BOT_ESCAPE_RECTS: Rect[] = [
 export function createInitialGame(seed = createSeed()): GameState {
   const rng = mulberry32(seed);
   const humanIndex = Math.floor(rng() * ACTOR_COUNT);
+  const task = createRoundTask(rng);
+  const sweepers = createSweeperStates();
   const draftState: GameState = {
     seed,
     rng,
@@ -72,8 +103,12 @@ export function createInitialGame(seed = createSeed()): GameState {
     exit: EXIT_ZONE,
     humanActorId: "",
     humanCollected: 0,
-    requiredItems: REQUIRED_ITEMS,
+    requiredItems: task.required,
     botCollections: 0,
+    task,
+    alarm: createAlarmState(rng),
+    sweeper: sweepers[0],
+    sweepers,
   };
 
   let botIndex = 0;
@@ -94,6 +129,14 @@ export function createInitialGame(seed = createSeed()): GameState {
       speed: isHuman ? HUMAN_SPEED : configureBotSpeed(personality, rng),
       radius: ACTOR_RADIUS,
       collected: 0,
+      stunnedUntil: 0,
+      stunCooldownUntil: 0,
+      respawnAt: 0,
+      respawnEffectUntil: 0,
+      completedTaskIds: [],
+      taskHoldStepId: null,
+      taskHoldTime: 0,
+      taskCooldownUntil: 0,
     };
 
     if (!isHuman) {
@@ -103,6 +146,7 @@ export function createInitialGame(seed = createSeed()): GameState {
         personality,
         target: position,
         targetKind: "wander",
+        targetTaskId: undefined,
         homeZone: botHomeZone,
         roamZone: botHomeZone,
         zoneCommitmentTimer: 2 + rng() * 4,
@@ -127,6 +171,7 @@ export function createInitialGame(seed = createSeed()): GameState {
         target: path[0] ?? target.target,
         targetKind: target.kind,
         targetActorId: target.targetActorId,
+        targetTaskId: target.targetTaskId,
         finalTarget: target.target,
         path,
         pathIndex: 0,
@@ -164,6 +209,106 @@ export function createInitialGame(seed = createSeed()): GameState {
   return draftState;
 }
 
+function createSweeperStates(): SweeperState[] {
+  return [
+    createSweeperState("security-sweeper-a", 0, 1, 1),
+    createSweeperState("security-sweeper-b", 5, 6, 0.96),
+  ];
+}
+
+function createSweeperState(id: string, startIndex: number, targetIndex: number, speedMultiplier: number): SweeperState {
+  const start = SWEEPER_PATROL_POINTS[startIndex] ?? SWEEPER_PATROL_POINTS[0];
+  const next = SWEEPER_PATROL_POINTS[targetIndex] ?? start;
+
+  return {
+    id,
+    position: { ...start },
+    velocity: { x: 0, y: 0 },
+    heading: Math.atan2(next.y - start.y, next.x - start.x),
+    targetIndex,
+    pauseTimer: 0,
+    radius: SWEEPER_RADIUS,
+    speed: SWEEPER_SPEED * speedMultiplier,
+  };
+}
+
+function createRoundTask(rng: () => number): RoundTask {
+  const optionalSteps = [
+    pickTaskStep(TERMINAL_TASK_TARGETS, rng),
+    pickTaskStep(ALARM_TASK_TARGETS, rng),
+    pickTaskStep(WALKWAY_TASK_TARGETS, rng),
+  ];
+  shuffle(optionalSteps, rng);
+
+  const steps: TaskStep[] = [
+    {
+      id: "collect-token",
+      kind: "collect",
+      label: "Collect 3 tokens",
+      description: "Pick up three tokens without looking too direct.",
+    },
+    ...optionalSteps.slice(0, PUBLIC_TASK_STEPS_PER_ROUND),
+  ];
+
+  return {
+    title: "Complete the task",
+    description: "Collect three tokens and complete one public task before the clock runs out.",
+    required: steps.length,
+    steps,
+  };
+}
+
+function pickTaskStep(steps: TaskStep[], rng: () => number): TaskStep {
+  const step = steps[Math.floor(rng() * steps.length)];
+  return {
+    ...step,
+    position: step.position ? { ...step.position } : undefined,
+    rect: step.rect ? { ...step.rect } : undefined,
+  };
+}
+
+function shuffle<T>(items: T[], rng: () => number): void {
+  for (let index = items.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(rng() * (index + 1));
+    [items[index], items[swapIndex]] = [items[swapIndex], items[index]];
+  }
+}
+
+function createAlarmState(rng: () => number): AlarmState {
+  const light = MAP_LAYER.alarmLights[Math.floor(rng() * MAP_LAYER.alarmLights.length)];
+  const warningAt = ALARM_MIN_START_TIME + rng() * (ALARM_MAX_START_TIME - ALARM_MIN_START_TIME);
+  const activeAt = warningAt + ALARM_WARNING_DURATION;
+
+  return {
+    lightId: light.id,
+    warningAt,
+    activeAt,
+    endsAt: activeAt + ALARM_ACTIVE_DURATION,
+    phase: "idle",
+  };
+}
+
+function updateAlarmState(state: GameState): void {
+  const { alarm } = state;
+
+  if (state.timeElapsed >= alarm.endsAt) {
+    alarm.phase = "done";
+    return;
+  }
+
+  if (state.timeElapsed >= alarm.activeAt) {
+    alarm.phase = "active";
+    return;
+  }
+
+  if (state.timeElapsed >= alarm.warningAt) {
+    alarm.phase = "warning";
+    return;
+  }
+
+  alarm.phase = "idle";
+}
+
 export function stepSimulation(
   state: GameState,
   input: InputState = EMPTY_INPUT,
@@ -176,23 +321,40 @@ export function stepSimulation(
   const safeDt = Math.min(dt, 0.05);
   state.timeElapsed += safeDt;
   state.timeRemaining = Math.max(0, ROUND_DURATION - state.timeElapsed);
+  updateAlarmState(state);
+  updateSweepers(state, safeDt);
+  respawnKnockedOutActors(state);
 
   updateHuman(state, input, safeDt);
   updateBots(state, safeDt);
   collectItems(state);
+  updateTaskProgress(state, safeDt);
   respawnItems(state);
   resolveActorCrowding(state);
   resolveActorsAgainstObstacles(state);
+  applySweeperStuns(state);
   checkRoundEnd(state);
 }
 
 export function cloneGameStateForRender(state: GameState): GameState {
   return {
     ...state,
+    alarm: { ...state.alarm },
+    sweeper: {
+      ...state.sweeper,
+      position: { ...state.sweeper.position },
+      velocity: { ...state.sweeper.velocity },
+    },
+    sweepers: state.sweepers.map((sweeper) => ({
+      ...sweeper,
+      position: { ...sweeper.position },
+      velocity: { ...sweeper.velocity },
+    })),
     actors: state.actors.map((actor) => ({
       ...actor,
       position: { ...actor.position },
       velocity: { ...actor.velocity },
+      completedTaskIds: [...actor.completedTaskIds],
       bot: actor.bot
         ? {
             ...actor.bot,
@@ -220,22 +382,223 @@ export function findHumanActor(state: GameState): Actor {
   return human;
 }
 
+function updateSweepers(state: GameState, dt: number): void {
+  for (const sweeper of state.sweepers) {
+    updateSweeper(state, sweeper, dt);
+  }
+}
+
+function updateSweeper(state: GameState, sweeper: SweeperState, dt: number): void {
+  if (sweeper.pauseTimer > 0) {
+    sweeper.pauseTimer = Math.max(0, sweeper.pauseTimer - dt);
+    sweeper.velocity = { x: 0, y: 0 };
+    return;
+  }
+
+  const target = SWEEPER_PATROL_POINTS[sweeper.targetIndex] ?? SWEEPER_PATROL_POINTS[0];
+  const toTarget = {
+    x: target.x - sweeper.position.x,
+    y: target.y - sweeper.position.y,
+  };
+  const gap = Math.hypot(toTarget.x, toTarget.y);
+
+  if (gap <= sweeper.radius) {
+    sweeper.position = { ...target };
+    sweeper.velocity = { x: 0, y: 0 };
+    sweeper.targetIndex = chooseNextSweeperTargetIndex(sweeper.targetIndex, state);
+    sweeper.pauseTimer = 0.08 + state.rng() * 0.24;
+    return;
+  }
+
+  const direction = {
+    x: toTarget.x / gap,
+    y: toTarget.y / gap,
+  };
+  const distanceToMove = Math.min(gap, sweeper.speed * dt);
+  sweeper.velocity = {
+    x: direction.x * sweeper.speed,
+    y: direction.y * sweeper.speed,
+  };
+  sweeper.heading = Math.atan2(direction.y, direction.x);
+  sweeper.position.x = clamp(sweeper.position.x + direction.x * distanceToMove, sweeper.radius, GAME_WIDTH - sweeper.radius);
+  sweeper.position.y = clamp(
+    sweeper.position.y + direction.y * distanceToMove,
+    sweeper.radius,
+    GAME_HEIGHT - sweeper.radius,
+  );
+}
+
+function chooseNextSweeperTargetIndex(currentIndex: number, state: GameState): number {
+  const currentPoint = SWEEPER_PATROL_POINTS[currentIndex] ?? SWEEPER_PATROL_POINTS[0];
+  const candidates = SWEEPER_PATROL_POINTS
+    .map((point, index) => ({ index, point }))
+    .filter((candidate) => candidate.index !== currentIndex)
+    .filter((candidate) => distance(currentPoint, candidate.point) > 175);
+  const pool = candidates.length > 0 ? candidates : SWEEPER_PATROL_POINTS.map((point, index) => ({ index, point }));
+
+  return pool[Math.floor(state.rng() * pool.length)]?.index ?? 0;
+}
+
+function applySweeperStuns(state: GameState): void {
+  for (const actor of state.actors) {
+    if (actor.respawnAt > 0) {
+      continue;
+    }
+
+    if (state.timeElapsed < actor.stunCooldownUntil) {
+      continue;
+    }
+
+    const touchingSweeper = state.sweepers.find(
+      (sweeper) => distance(actor.position, sweeper.position) <= actor.radius + sweeper.radius,
+    );
+    if (!touchingSweeper) {
+      continue;
+    }
+
+    actor.velocity = { x: 0, y: 0 };
+    resetActorProgress(state, actor);
+    actor.respawnAt = state.timeElapsed + SWEEPER_STUN_DURATION;
+    actor.stunnedUntil = actor.respawnAt;
+    actor.stunCooldownUntil = Math.max(
+      state.timeElapsed + SWEEPER_STUN_COOLDOWN,
+      actor.respawnAt + SWEEPER_RESPAWN_INVULNERABILITY,
+    );
+    resetBotStuckCheck(actor);
+  }
+}
+
+function respawnKnockedOutActors(state: GameState): void {
+  for (const actor of state.actors) {
+    if (actor.respawnAt <= 0 || state.timeElapsed < actor.respawnAt) {
+      continue;
+    }
+
+    const respawnPoint = pickActorRespawnPoint(state, actor);
+    actor.position = respawnPoint;
+    actor.velocity = { x: 0, y: 0 };
+    actor.heading = state.rng() * Math.PI * 2;
+    actor.targetHeading = actor.heading;
+    actor.respawnAt = 0;
+    actor.stunnedUntil = 0;
+    actor.respawnEffectUntil = state.timeElapsed + SWEEPER_RESPAWN_EFFECT_DURATION;
+    actor.stunCooldownUntil = Math.max(actor.stunCooldownUntil, state.timeElapsed + SWEEPER_RESPAWN_INVULNERABILITY);
+    resetBotAfterRespawn(actor, state);
+  }
+}
+
+function resetActorProgress(state: GameState, actor: Actor): void {
+  const lostPoints = actor.collected;
+  const lostTaskCount = actor.completedTaskIds.length;
+  if (lostPoints <= 0 && lostTaskCount <= 0) {
+    return;
+  }
+
+  actor.collected = 0;
+  actor.completedTaskIds = [];
+  actor.taskHoldStepId = null;
+  actor.taskHoldTime = 0;
+  actor.taskCooldownUntil = state.timeElapsed + 0.35;
+
+  if (actor.id === state.humanActorId) {
+    state.humanCollected = 0;
+    return;
+  }
+
+  state.botCollections = Math.max(0, state.botCollections - lostTaskCount);
+}
+
+function pickActorRespawnPoint(state: GameState, actor: Actor): Vector {
+  const preferredZone = actor.bot?.homeZone;
+
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const shouldUsePreferredZone = Boolean(preferredZone) && state.rng() < 0.55;
+    const point = randomOpenPoint(state, state.rng, shouldUsePreferredZone ? preferredZone : undefined);
+
+    if (isSafeRespawnPoint(point, actor, state)) {
+      return point;
+    }
+  }
+
+  const fallbackPoints = [
+    ...state.mapLayer.itemSpawnPoints,
+    ...state.mapLayer.botWaypoints,
+    ...state.mapLayer.botNavigationNodes.map((node) => node.position),
+  ]
+    .filter((point) => isSafeRespawnPoint(point, actor, state))
+    .sort((a, b) => distanceToClosestSweeper(b, state) - distanceToClosestSweeper(a, state));
+
+  if (fallbackPoints.length > 0) {
+    return { ...fallbackPoints[0] };
+  }
+
+  return placePointAwayFromActors(state, state.rng, preferredZone);
+}
+
+function isSafeRespawnPoint(point: Vector, actor: Actor, state: GameState): boolean {
+  if (distanceToClosestSweeper(point, state) < SWEEPER_RESPAWN_SAFE_RADIUS) {
+    return false;
+  }
+
+  if (collidesWithAnyObstacle(point, actor.radius + 2, state.obstacles)) {
+    return false;
+  }
+
+  return state.actors.every(
+    (candidate) => candidate.id === actor.id || distance(point, candidate.position) > ACTOR_RADIUS * 3,
+  );
+}
+
+function resetBotAfterRespawn(actor: Actor, state: GameState): void {
+  if (!actor.bot) {
+    return;
+  }
+
+  actor.bot.pauseTimer = 0.35 + state.rng() * 0.55;
+  actor.bot.retargetTimer = 0;
+  actor.bot.path = [];
+  actor.bot.pathIndex = 0;
+  actor.bot.target = actor.position;
+  actor.bot.finalTarget = actor.position;
+  actor.bot.targetKind = "wander";
+  actor.bot.targetActorId = undefined;
+  actor.bot.targetTaskId = undefined;
+  actor.bot.targetZone = getMapZoneForPoint(actor.position, state);
+  actor.bot.roamZone = actor.bot.targetZone ?? actor.bot.roamZone;
+  actor.bot.unstickCooldown = 0.7;
+  resetBotStuckCheck(actor);
+}
+
+function isActorStunned(actor: Actor, state: GameState): boolean {
+  return state.timeElapsed < actor.stunnedUntil;
+}
+
 function updateHuman(state: GameState, input: InputState, dt: number): void {
   const human = findHumanActor(state);
-  const direction = normalize({
-    x: (input.right ? 1 : 0) - (input.left ? 1 : 0),
-    y: (input.down ? 1 : 0) - (input.up ? 1 : 0),
-  });
+
+  if (isActorStunned(human, state)) {
+    human.velocity = { x: 0, y: 0 };
+    return;
+  }
+
+  const rawDirection = {
+    x: clamp(input.moveX + (input.right ? 1 : 0) - (input.left ? 1 : 0), -1, 1),
+    y: clamp(input.moveY + (input.down ? 1 : 0) - (input.up ? 1 : 0), -1, 1),
+  };
+  const speedScale = Math.min(1, Math.hypot(rawDirection.x, rawDirection.y));
+  const direction = normalize(rawDirection);
 
   human.velocity = {
-    x: direction.x * human.speed,
-    y: direction.y * human.speed,
+    x: direction.x * human.speed * speedScale,
+    y: direction.y * human.speed * speedScale,
   };
 
   moveActor(state, human, human.velocity, dt);
 }
 
 function updateBots(state: GameState, dt: number): void {
+  const activeAlarmLight = getActiveAlarmLight(state);
+
   for (const actor of state.actors) {
     if (actor.kind !== "bot" || !actor.bot) {
       continue;
@@ -246,11 +609,31 @@ function updateBots(state: GameState, dt: number): void {
     bot.zoneCommitmentTimer = Math.max(0, bot.zoneCommitmentTimer - dt);
     bot.unstickCooldown = Math.max(0, bot.unstickCooldown - dt);
 
+    if (activeAlarmLight) {
+      assignAlarmBotTarget(actor, state, activeAlarmLight);
+    } else if (bot.targetKind === "alarm") {
+      assignNewBotTarget(actor, state);
+    }
+
+    if (
+      !activeAlarmLight &&
+      bot.targetTaskId &&
+      actor.completedTaskIds.includes(bot.targetTaskId)
+    ) {
+      assignNewBotTarget(actor, state);
+    }
+
+    if (isActorStunned(actor, state)) {
+      actor.velocity = { x: 0, y: 0 };
+      resetBotStuckCheck(actor);
+      continue;
+    }
+
     if (bot.pauseTimer > 0) {
       bot.pauseTimer -= dt;
       actor.velocity = { x: 0, y: 0 };
       moveActor(state, actor, actor.velocity, dt);
-      if (bot.pauseTimer <= 0 && state.rng() < 0.42) {
+      if (!activeAlarmLight && bot.pauseTimer <= 0 && state.rng() < 0.42) {
         assignNewBotTarget(actor, state);
       }
       continue;
@@ -259,7 +642,7 @@ function updateBots(state: GameState, dt: number): void {
     let freshTarget = getCurrentBotTarget(actor, state);
     let distanceToTarget = distance(actor.position, freshTarget);
 
-    if (bot.targetKind === "item" && !hasActiveItemNear(bot.finalTarget, state)) {
+    if (!activeAlarmLight && bot.targetKind === "item" && !hasActiveItemNear(bot.finalTarget, state)) {
       assignNewBotTarget(actor, state);
       freshTarget = getCurrentBotTarget(actor, state);
       distanceToTarget = distance(actor.position, freshTarget);
@@ -269,6 +652,15 @@ function updateBots(state: GameState, dt: number): void {
       if (advanceBotPath(actor)) {
         freshTarget = getCurrentBotTarget(actor, state);
         distanceToTarget = distance(actor.position, freshTarget);
+      } else if (activeAlarmLight) {
+        actor.velocity = { x: 0, y: 0 };
+        resetBotStuckCheck(actor);
+        continue;
+      } else if (bot.targetKind === "task") {
+        actor.velocity = { x: 0, y: 0 };
+        bot.pauseTimer = Math.max(bot.pauseTimer, TASK_HOLD_DURATION + 0.2 + state.rng() * 0.45);
+        resetBotStuckCheck(actor);
+        continue;
       } else {
         const shouldKeepCollecting = bot.targetKind === "item" && actor.collected < bot.pointQuota;
         if (!shouldKeepCollecting && !isPointInMovingWalkway(actor.position, state)) {
@@ -285,7 +677,12 @@ function updateBots(state: GameState, dt: number): void {
       }
     }
 
-    if (bot.retargetTimer <= 0 && bot.pathIndex >= bot.path.length - 1 && distanceToTarget > actor.radius + 26) {
+    if (
+      !activeAlarmLight &&
+      bot.retargetTimer <= 0 &&
+      bot.pathIndex >= bot.path.length - 1 &&
+      distanceToTarget > actor.radius + 26
+    ) {
       maybePauseBot(actor, state.rng);
       assignNewBotTarget(actor, state);
       if (bot.pauseTimer > 0) {
@@ -303,11 +700,14 @@ function updateBots(state: GameState, dt: number): void {
     const wobble = (state.rng() - 0.5) * botJitter(bot.personality);
     const movedDirection = rotate(direction, wobble);
     const walkwayAdjustedDirection = steerBotOffMovingWalkway(actor, movedDirection, state);
-    const steeredDirection = getMovingWalkwayAt(actor.position, state)
+    const hazardAdjustedDirection = activeAlarmLight
       ? walkwayAdjustedDirection
-      : steerBotDirection(actor, walkwayAdjustedDirection, dt);
+      : steerBotAwayFromSweeper(actor, walkwayAdjustedDirection, state);
+    const steeredDirection = getMovingWalkwayAt(actor.position, state)
+      ? hazardAdjustedDirection
+      : steerBotDirection(actor, hazardAdjustedDirection, dt);
     const turnDelta = Math.abs(
-      shortestAngleDelta(actor.heading, Math.atan2(walkwayAdjustedDirection.y, walkwayAdjustedDirection.x)),
+      shortestAngleDelta(actor.heading, Math.atan2(hazardAdjustedDirection.y, hazardAdjustedDirection.x)),
     );
     const turnSlowdown = turnDelta > Math.PI * 0.62 ? 0.62 : turnDelta > Math.PI * 0.36 ? 0.82 : 1;
 
@@ -334,9 +734,45 @@ function assignNewBotTarget(actor: Actor, state: GameState): void {
   actor.bot.finalTarget = next.target;
   actor.bot.targetKind = next.kind;
   actor.bot.targetActorId = next.targetActorId;
+  actor.bot.targetTaskId = next.targetTaskId;
   actor.bot.targetZone = next.targetZone;
   actor.bot.retargetTimer = getBotRetargetDelay(actor, state);
   resetBotStuckCheck(actor);
+}
+
+function assignAlarmBotTarget(actor: Actor, state: GameState, alarmLight: AlarmLight): void {
+  if (!actor.bot) {
+    return;
+  }
+
+  const bot = actor.bot;
+  bot.pauseTimer = 0;
+  bot.retargetTimer = 0.25;
+
+  if (bot.targetKind === "alarm" && distance(bot.finalTarget, alarmLight.rallyPoint) < 1) {
+    return;
+  }
+
+  const path = planBotPath(actor.position, alarmLight.rallyPoint, state);
+  bot.path = path;
+  bot.pathIndex = 0;
+  bot.target = path[0] ?? alarmLight.rallyPoint;
+  bot.finalTarget = alarmLight.rallyPoint;
+  bot.targetKind = "alarm";
+  bot.targetActorId = undefined;
+  bot.targetTaskId = undefined;
+  bot.targetZone = getMapZoneForPoint(alarmLight.rallyPoint, state);
+  bot.roamZone = bot.targetZone ?? bot.roamZone;
+  bot.unstickCooldown = 0;
+  resetBotStuckCheck(actor);
+}
+
+function getActiveAlarmLight(state: GameState): AlarmLight | undefined {
+  if (state.alarm.phase !== "active") {
+    return undefined;
+  }
+
+  return state.mapLayer.alarmLights.find((light) => light.id === state.alarm.lightId);
 }
 
 function getCurrentBotTarget(actor: Actor, state: GameState): Vector {
@@ -410,6 +846,7 @@ function assignBotEscapeTarget(actor: Actor, state: GameState): void {
   bot.finalTarget = target;
   bot.targetKind = "wander";
   bot.targetActorId = undefined;
+  bot.targetTaskId = undefined;
   bot.targetZone = getMapZoneForPoint(target, state);
   bot.roamZone = bot.targetZone ?? bot.roamZone;
   bot.zoneCommitmentTimer = Math.max(bot.zoneCommitmentTimer, 1.4);
@@ -603,7 +1040,10 @@ function collectItems(state: GameState): void {
     }
 
     const collectors = state.actors.filter(
-      (actor) => distance(actor.position, item.position) <= actor.radius + ITEM_RADIUS + 2,
+      (actor) =>
+        actor.respawnAt <= 0 &&
+        !isActorStunned(actor, state) &&
+        distance(actor.position, item.position) <= actor.radius + ITEM_RADIUS + 2,
     );
     const collector = chooseItemCollector(collectors, state, item.position);
 
@@ -612,15 +1052,104 @@ function collectItems(state: GameState): void {
     }
 
     item.active = false;
-    item.respawnAt = state.timeElapsed + 1.8 + state.rng() * 2.7;
+    item.respawnAt = state.timeElapsed + ITEM_RESPAWN_MIN_SECONDS + state.rng() * ITEM_RESPAWN_RANDOM_SECONDS;
     collector.collected += 1;
+    completeCollectTask(state, collector);
+  }
+}
 
-    if (collector.id === state.humanActorId) {
-      state.humanCollected = Math.min(state.requiredItems, state.humanCollected + 1);
-    } else {
-      state.botCollections += 1;
+function updateTaskProgress(state: GameState, dt: number): void {
+  for (const actor of state.actors) {
+    if (actor.respawnAt > 0 || isActorStunned(actor, state)) {
+      actor.taskHoldStepId = null;
+      actor.taskHoldTime = 0;
+      continue;
+    }
+
+    if (state.timeElapsed < actor.taskCooldownUntil) {
+      continue;
+    }
+
+    const activeStep = findActiveHoldTaskStep(actor, state);
+    if (!activeStep) {
+      actor.taskHoldStepId = null;
+      actor.taskHoldTime = 0;
+      continue;
+    }
+
+    if (actor.taskHoldStepId !== activeStep.id) {
+      actor.taskHoldStepId = activeStep.id;
+      actor.taskHoldTime = 0;
+    }
+
+    const speed = Math.hypot(actor.velocity.x, actor.velocity.y);
+    const canProgress = activeStep.kind === "walkway" || speed < actor.speed * 0.32;
+
+    if (!canProgress) {
+      actor.taskHoldTime = Math.max(0, actor.taskHoldTime - dt * 1.5);
+      continue;
+    }
+
+    actor.taskHoldTime += dt;
+
+    if (actor.taskHoldTime >= TASK_HOLD_DURATION) {
+      completeTaskStep(state, actor, activeStep);
     }
   }
+}
+
+function completeCollectTask(state: GameState, actor: Actor): void {
+  const collectStep = state.task.steps.find((step) => step.kind === "collect");
+  if (!collectStep || actor.collected < REQUIRED_ITEMS) {
+    return;
+  }
+
+  completeTaskStep(state, actor, collectStep);
+}
+
+function findActiveHoldTaskStep(actor: Actor, state: GameState): TaskStep | undefined {
+  const incompleteSteps = state.task.steps.filter(
+    (step) => step.kind !== "collect" && !actor.completedTaskIds.includes(step.id),
+  );
+  const currentStep = incompleteSteps.find(
+    (step) => step.id === actor.taskHoldStepId && actorIsInsideTaskStep(actor, step),
+  );
+
+  if (currentStep) {
+    return currentStep;
+  }
+
+  return incompleteSteps.find((step) => actorIsInsideTaskStep(actor, step));
+}
+
+function actorIsInsideTaskStep(actor: Actor, step: TaskStep): boolean {
+  if (step.rect) {
+    return isPointInRect(actor.position, step.rect);
+  }
+
+  if (step.position) {
+    return distance(actor.position, step.position) <= (step.radius ?? TASK_TARGET_RADIUS);
+  }
+
+  return false;
+}
+
+function completeTaskStep(state: GameState, actor: Actor, step: TaskStep): void {
+  if (actor.completedTaskIds.includes(step.id)) {
+    return;
+  }
+
+  actor.completedTaskIds = [...actor.completedTaskIds, step.id];
+  actor.taskHoldStepId = null;
+  actor.taskHoldTime = 0;
+  actor.taskCooldownUntil = state.timeElapsed + 0.25;
+
+  if (actor.id === state.humanActorId) {
+    state.humanCollected = Math.min(state.requiredItems, actor.completedTaskIds.length);
+    return;
+  }
+
+  state.botCollections += 1;
 }
 
 function chooseItemCollector(
@@ -766,9 +1295,55 @@ function steerBotDirection(actor: Actor, desiredDirection: Vector, dt: number): 
   };
 }
 
+function steerBotAwayFromSweeper(actor: Actor, desiredDirection: Vector, state: GameState): Vector {
+  const sweeper = findClosestSweeper(actor.position, state);
+  if (!sweeper) {
+    return desiredDirection;
+  }
+
+  const fromSweeper = {
+    x: actor.position.x - sweeper.position.x,
+    y: actor.position.y - sweeper.position.y,
+  };
+  const gap = Math.hypot(fromSweeper.x, fromSweeper.y);
+
+  if (gap <= 0.001 || gap > SWEEPER_AVOID_RADIUS) {
+    return desiredDirection;
+  }
+
+  const away = {
+    x: fromSweeper.x / gap,
+    y: fromSweeper.y / gap,
+  };
+  const movingTowardSweeper = desiredDirection.x * -away.x + desiredDirection.y * -away.y;
+
+  if (movingTowardSweeper < 0.12) {
+    return desiredDirection;
+  }
+
+  const urgency = 1 - gap / SWEEPER_AVOID_RADIUS;
+  return normalize({
+    x: desiredDirection.x + away.x * SWEEPER_AVOID_STRENGTH * urgency,
+    y: desiredDirection.y + away.y * SWEEPER_AVOID_STRENGTH * urgency,
+  });
+}
+
+function findClosestSweeper(point: Vector, state: GameState): SweeperState | undefined {
+  return [...state.sweepers].sort((a, b) => distance(point, a.position) - distance(point, b.position))[0];
+}
+
+function distanceToClosestSweeper(point: Vector, state: GameState): number {
+  const sweeper = findClosestSweeper(point, state);
+  return sweeper ? distance(point, sweeper.position) : Number.POSITIVE_INFINITY;
+}
+
 function steerBotOffMovingWalkway(actor: Actor, desiredDirection: Vector, state: GameState): Vector {
   const walkway = getMovingWalkwayAt(actor.position, state);
   if (!walkway) {
+    return desiredDirection;
+  }
+
+  if (actor.bot?.targetKind === "task" && actor.bot.targetTaskId === `ride-${walkway.id}`) {
     return desiredDirection;
   }
 

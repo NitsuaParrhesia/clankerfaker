@@ -1,6 +1,6 @@
-import { Flag, RotateCcw, Timer } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { COUNTDOWN_SECONDS, SNAPSHOT_INTERVAL } from "../game/constants";
+import { Flag, Play, RotateCcw, Timer } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { COUNTDOWN_SECONDS, REQUIRED_ITEMS, SNAPSHOT_INTERVAL } from "../game/constants";
 import { createRecording, createSnapshot } from "../game/replay";
 import {
   cloneGameStateForRender,
@@ -8,7 +8,7 @@ import {
   findHumanActor,
   stepSimulation,
 } from "../game/simulation";
-import type { GameState, InputState, ReplayRecording, ReplaySnapshot } from "../game/types";
+import type { GameState, InputState, ReplayRecording, ReplaySnapshot, TaskStepKind } from "../game/types";
 import GameCanvas from "./GameCanvas";
 
 type HidePhaseProps = {
@@ -16,7 +16,9 @@ type HidePhaseProps = {
   onRestart: () => void;
 };
 
-const MOVEMENT_KEYS: Record<string, keyof InputState> = {
+type MovementInputKey = "up" | "down" | "left" | "right";
+
+const MOVEMENT_KEYS: Record<string, MovementInputKey> = {
   w: "up",
   ArrowUp: "up",
   s: "down",
@@ -32,21 +34,30 @@ const INITIAL_INPUT: InputState = {
   down: false,
   left: false,
   right: false,
+  moveX: 0,
+  moveY: 0,
 };
+
+const JOYSTICK_RADIUS = 34;
+const JOYSTICK_DEAD_ZONE = 0.12;
 
 export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
   const [renderState, setRenderState] = useState<GameState>(() => createInitialGame());
   const [countdownRemaining, setCountdownRemaining] = useState(COUNTDOWN_SECONDS);
+  const [objectiveBriefOpen, setObjectiveBriefOpen] = useState(true);
   const [debugOverlay, setDebugOverlay] = useState(false);
+  const [joystick, setJoystick] = useState({ x: 0, y: 0, active: false });
   const simRef = useRef<GameState>(renderState);
   const inputRef = useRef<InputState>({ ...INITIAL_INPUT });
   const snapshotsRef = useRef<ReplaySnapshot[]>([createSnapshot(renderState)]);
   const lastFrameRef = useRef<number | null>(null);
   const countdownStartedAtRef = useRef<number | null>(null);
+  const countdownArmedRef = useRef(false);
   const roundStartedRef = useRef(false);
   const nextSnapshotAtRef = useRef(SNAPSHOT_INTERVAL);
   const finishedRef = useRef(false);
   const onCompleteRef = useRef(onComplete);
+  const joystickActiveRef = useRef(false);
 
   useEffect(() => {
     onCompleteRef.current = onComplete;
@@ -86,6 +97,11 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
 
     function tick(now: number) {
       const state = simRef.current;
+
+      if (!countdownArmedRef.current) {
+        frameId = window.requestAnimationFrame(tick);
+        return;
+      }
 
       if (!roundStartedRef.current) {
         if (countdownStartedAtRef.current == null) {
@@ -140,13 +156,75 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
 
   const human = useMemo(() => findHumanActor(renderState), [renderState]);
   const objectiveReady = renderState.humanCollected >= renderState.requiredItems;
+  const completedTaskIds = useMemo(() => new Set(human.completedTaskIds), [human.completedTaskIds]);
   const countdownValue = Math.ceil(countdownRemaining);
+  const countdownActive = !objectiveBriefOpen && countdownRemaining > 0;
+  const roundStarted = !objectiveBriefOpen && countdownRemaining <= 0;
+
+  function handleStartCountdown() {
+    countdownArmedRef.current = true;
+    countdownStartedAtRef.current = null;
+    setCountdownRemaining(COUNTDOWN_SECONDS);
+    setObjectiveBriefOpen(false);
+  }
+
+  function updateJoystickInput(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const rawX = event.clientX - centerX;
+    const rawY = event.clientY - centerY;
+    const distance = Math.hypot(rawX, rawY);
+    const limitedDistance = Math.min(distance, JOYSTICK_RADIUS);
+    const normal = distance > 0 ? { x: rawX / distance, y: rawY / distance } : { x: 0, y: 0 };
+    const inputX = normal.x * (limitedDistance / JOYSTICK_RADIUS);
+    const inputY = normal.y * (limitedDistance / JOYSTICK_RADIUS);
+    const adjustedInput = {
+      x: Math.abs(inputX) < JOYSTICK_DEAD_ZONE ? 0 : inputX,
+      y: Math.abs(inputY) < JOYSTICK_DEAD_ZONE ? 0 : inputY,
+    };
+
+    inputRef.current.moveX = adjustedInput.x;
+    inputRef.current.moveY = adjustedInput.y;
+    setJoystick({
+      x: normal.x * limitedDistance,
+      y: normal.y * limitedDistance,
+      active: true,
+    });
+  }
+
+  function handleJoystickPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    joystickActiveRef.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateJoystickInput(event);
+  }
+
+  function handleJoystickPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!joystickActiveRef.current) {
+      return;
+    }
+
+    updateJoystickInput(event);
+  }
+
+  function resetJoystick(event?: ReactPointerEvent<HTMLDivElement>) {
+    if (event?.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    inputRef.current.moveX = 0;
+    inputRef.current.moveY = 0;
+    joystickActiveRef.current = false;
+    setJoystick({ x: 0, y: 0, active: false });
+  }
 
   return (
-    <main className="screen play-screen">
+    <main className="screen play-screen play-screen--hide">
       <section className="game-stage">
         <div className="top-bar">
-          {countdownRemaining > 0 ? <h2>Clanker {human.label} is yours</h2> : <span aria-hidden="true" />}
+          {!roundStarted ? <h2>Clanker {human.label} is yours</h2> : <span aria-hidden="true" />}
           <div className="stat-strip" aria-label="Round status">
             <span title="Time remaining">
               <Timer size={18} aria-hidden="true" />
@@ -168,26 +246,83 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
             mode="hide"
             state={renderState}
             debugOverlay={debugOverlay}
-            showNumberBadges={countdownRemaining > 0}
+            showNumberBadges={!roundStarted}
+            countdownHighlightActorId={!roundStarted ? human.id : null}
           />
-          {countdownRemaining > 0 && (
+          {objectiveBriefOpen && (
+            <ObjectiveBriefModal actorLabel={human.label} state={renderState} onStart={handleStartCountdown} />
+          )}
+          {countdownActive && (
             <div className="countdown-overlay" aria-live="polite">
               <span>Get ready</span>
               <strong>{countdownValue}</strong>
             </div>
           )}
         </div>
+
+        <div className="mobile-hide-controls" aria-label="Touch movement controls">
+          <div
+            className={`virtual-joystick ${joystick.active ? "is-active" : ""}`}
+            role="application"
+            aria-label="Move clanker"
+            onPointerDown={handleJoystickPointerDown}
+            onPointerMove={handleJoystickPointerMove}
+            onPointerUp={resetJoystick}
+            onPointerCancel={resetJoystick}
+            onLostPointerCapture={() => resetJoystick()}
+          >
+            <span
+              className="virtual-joystick__thumb"
+              style={{ transform: `translate(${joystick.x}px, ${joystick.y}px)` }}
+            />
+          </div>
+
+          <div className="mobile-hud" aria-label="Round status">
+            <span title="Time remaining">
+              <Timer size={17} aria-hidden="true" />
+              {formatTime(renderState.timeRemaining)}
+            </span>
+            <span title="Objective progress">
+              <Flag size={17} aria-hidden="true" />
+              {renderState.humanCollected}/{renderState.requiredItems}
+            </span>
+            <button className="stat-action" type="button" title="Restart hide phase" onClick={onRestart}>
+              <RotateCcw size={17} aria-hidden="true" />
+              Restart
+            </button>
+          </div>
+        </div>
       </section>
 
       <aside className="side-panel">
-        <div className="side-section">
+          <div className="side-section">
           <p className="panel-label">Objective</p>
-          <strong>{objectiveReady ? "Points banked" : "Score 3 points"}</strong>
+          <strong>{objectiveReady ? "Task complete" : "Complete the task"}</strong>
           <p>
             {objectiveReady
-              ? "You have enough points. Keep blending until the clock runs out."
-              : "Collect three blue items before time expires, then stay natural."}
+              ? "You finished the public task. Keep blending until the clock runs out."
+              : "Collect three tokens, finish one public task, and avoid moving too perfectly."}
           </p>
+          <ol className="task-step-list" aria-label="Task checklist">
+            {renderState.task.steps.map((step) => {
+              const isComplete = completedTaskIds.has(step.id);
+              const isHolding = human.taskHoldStepId === step.id && !isComplete;
+              return (
+                <li
+                  className={`task-step-list__item ${isComplete ? "is-complete" : ""} ${isHolding ? "is-holding" : ""}`}
+                  key={step.id}
+                >
+                  <span className="task-step-list__status" aria-hidden="true">
+                    {isComplete ? "OK" : isHolding ? "..." : ""}
+                  </span>
+                  <span>
+                    <strong>{step.label}</strong>
+                    <small>{isComplete ? "Done" : getTaskStepHint(step.kind, human.collected)}</small>
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
         </div>
 
         <div className="side-section">
@@ -198,7 +333,11 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
             <span>S</span>
             <span>D</span>
           </div>
-          <p>Arrow keys work too.</p>
+          <p>
+            {roundStarted
+              ? "Use WASD, arrow keys, or the mobile joystick."
+              : "Read the objective, then start the countdown when you are ready."}
+          </p>
         </div>
 
         <div className="side-section">
@@ -214,9 +353,75 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
   );
 }
 
+function ObjectiveBriefModal({
+  actorLabel,
+  state,
+  onStart,
+}: {
+  actorLabel: number;
+  state: GameState;
+  onStart: () => void;
+}) {
+  return (
+    <div className="objective-brief-overlay" role="presentation">
+      <section className="objective-brief" role="dialog" aria-modal="true" aria-labelledby="objective-brief-title">
+        <p className="eyebrow">Your objective</p>
+        <h1 id="objective-brief-title">Clanker {actorLabel}, complete the task.</h1>
+        <p>
+          Collect three tokens and complete one public task before the clock runs out.
+        </p>
+
+        <ol className="objective-brief__tasks" aria-label="Round objectives">
+          {state.task.steps.map((step) => (
+            <li key={step.id}>
+              <strong>{step.label}</strong>
+              <span>{getObjectiveBriefHint(step.kind)}</span>
+            </li>
+          ))}
+        </ol>
+
+        <button className="primary-button objective-brief__start" type="button" onClick={onStart}>
+          <Play size={20} aria-hidden="true" />
+          Start Countdown
+        </button>
+      </section>
+    </div>
+  );
+}
+
 function formatTime(seconds: number): string {
   const clamped = Math.max(0, Math.ceil(seconds));
   const minutes = Math.floor(clamped / 60);
   const remaining = clamped % 60;
   return `${minutes}:${String(remaining).padStart(2, "0")}`;
+}
+
+function getTaskStepHint(kind: TaskStepKind, collectedPoints: number): string {
+  switch (kind) {
+    case "collect":
+      return `${Math.min(collectedPoints, REQUIRED_ITEMS)}/${REQUIRED_ITEMS} tokens`;
+    case "terminal":
+      return "Pause at the console";
+    case "alarm":
+      return "Stand in the marked area";
+    case "walkway":
+      return "Ride the marked belt";
+    default:
+      return "In progress";
+  }
+}
+
+function getObjectiveBriefHint(kind: TaskStepKind): string {
+  switch (kind) {
+    case "collect":
+      return "Required";
+    case "terminal":
+      return "Pause there";
+    case "alarm":
+      return "Stand there";
+    case "walkway":
+      return "Ride it";
+    default:
+      return "Required";
+  }
 }

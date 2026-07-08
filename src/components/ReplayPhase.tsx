@@ -1,35 +1,71 @@
-import { Check, Pause, Play, RotateCcw, Send } from "lucide-react";
+import { Check, Pause, Play, RotateCcw, Search, Send, Trophy } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ROUND_DURATION } from "../game/constants";
 import { findSnapshotActor, getActorTrail, getReplayFrame } from "../game/replay";
-import type { ActorSnapshot, ReplayRecording } from "../game/types";
+import { ReviewSubmissionError, submitReviewGuess } from "../game/reviews";
+import type { ReviewResult } from "../game/reviews";
+import type { ActorSnapshot, AlarmSnapshot, MapLayer, Rect, ReplayRecording, Vector } from "../game/types";
 import GameCanvas from "./GameCanvas";
 
 type ReplayPhaseProps = {
   recording: ReplayRecording;
+  replayId?: string | null;
   guessActorId?: string | null;
   onGuess: (actorId: string) => void;
-  onChallengeBack: () => void;
-  showChallengeIntro?: boolean;
+  onRecordRun: () => void;
+  onSpotAnother: () => void;
+  introKind?: "challenge" | "pool" | null;
 };
 
 const PLAYBACK_SPEEDS = [0.5, 1, 1.5, 2];
+type ReviewSaveState = "idle" | "saving" | "saved" | "duplicate" | "unscored" | "self-review" | "expired" | "failed";
+type ReplayEventKind = "token" | "sweeper-hit" | "pop" | "tree-enter" | "tree-exit" | "walkway" | "alarm";
+
+type ReplayEventLogEntry = {
+  id: string;
+  kind: ReplayEventKind;
+  timestamp: number;
+  title: string;
+  detail: string;
+};
+
+type ReplayEventLogStats = {
+  tokens: number;
+  sweeperHits: number;
+  pops: number;
+  treeHides: number;
+  walkwayRides: number;
+  alarmCorners: number;
+};
+
+type ReplayEventLog = {
+  stats: ReplayEventLogStats;
+  events: ReplayEventLogEntry[];
+};
+
+const ALARM_CORNER_RADIUS = 98;
 
 export default function ReplayPhase({
   recording,
+  replayId = null,
   guessActorId = null,
   onGuess,
-  onChallengeBack,
-  showChallengeIntro = false,
+  onRecordRun,
+  onSpotAnother,
+  introKind = null,
 }: ReplayPhaseProps) {
   const [replayTime, setReplayTime] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(!showChallengeIntro);
-  const [introOpen, setIntroOpen] = useState(showChallengeIntro);
+  const [isPlaying, setIsPlaying] = useState(introKind == null);
+  const [introOpen, setIntroOpen] = useState(introKind != null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
   const [debugOverlay, setDebugOverlay] = useState(false);
+  const [reviewSaveState, setReviewSaveState] = useState<ReviewSaveState>("idle");
+  const [reviewResult, setReviewResult] = useState<ReviewResult | null>(null);
   const lastTickRef = useRef<number | null>(null);
   const frame = useMemo(() => getReplayFrame(recording, replayTime), [recording, replayTime]);
   const isRevealed = guessActorId != null;
+  const isPreviewOnly = replayId == null && introKind == null;
   const correctGuess = guessActorId === recording.humanActorId;
   const selectedActor = selectedActorId ? findSnapshotActor(frame, selectedActorId) : undefined;
   const selectedActorIsVisible = selectedActor ? !isActorUnderCover(selectedActor, recording) : false;
@@ -43,14 +79,21 @@ export default function ReplayPhase({
     () => (isRevealed ? getActorTrail(recording, recording.humanActorId, replayTime) : selectedTrail),
     [isRevealed, recording, replayTime, selectedTrail],
   );
+  const inspectedActorId = isRevealed ? recording.humanActorId : visibleSelectedActorId;
+  const inspectedEventLog = useMemo(
+    () => (inspectedActorId ? createReplayEventLog(recording, inspectedActorId) : null),
+    [inspectedActorId, recording],
+  );
 
   useEffect(() => {
-    setIntroOpen(showChallengeIntro);
-    setIsPlaying(!showChallengeIntro);
+    setIntroOpen(introKind != null);
+    setIsPlaying(introKind == null);
     setReplayTime(0);
     setSelectedActorId(null);
+    setReviewSaveState("idle");
+    setReviewResult(null);
     lastTickRef.current = null;
-  }, [recording, showChallengeIntro]);
+  }, [recording, introKind]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -108,6 +151,41 @@ export default function ReplayPhase({
 
     setIsPlaying(false);
     onGuess(visibleSelectedActorId);
+
+    if (!replayId) {
+      setReviewSaveState("unscored");
+      setReviewResult(null);
+      return;
+    }
+
+    setReviewSaveState("saving");
+    setReviewResult(null);
+    void submitReviewGuess({ replayId, guessedActorId: visibleSelectedActorId })
+      .then((result) => {
+        setReviewResult(result);
+        setReviewSaveState(result.alreadySubmitted ? "duplicate" : "saved");
+      })
+      .catch((error: unknown) => {
+        setReviewResult(null);
+        if (error instanceof ReviewSubmissionError) {
+          if (error.reason === "self-review") {
+            setReviewSaveState("self-review");
+            return;
+          }
+
+          if (error.reason === "expired" || error.reason === "not-found") {
+            setReviewSaveState("expired");
+            return;
+          }
+
+          if (error.reason === "unscoreable") {
+            setReviewSaveState("unscored");
+            return;
+          }
+        }
+
+        setReviewSaveState("failed");
+      });
   }
 
   function handleRestart() {
@@ -117,6 +195,11 @@ export default function ReplayPhase({
 
   function handleScrub(value: string) {
     setReplayTime(Number(value));
+    setIsPlaying(false);
+  }
+
+  function handleJumpToEvent(timestamp: number) {
+    setReplayTime(Math.max(0, Math.min(recording.duration, timestamp)));
     setIsPlaying(false);
   }
 
@@ -197,40 +280,71 @@ export default function ReplayPhase({
               <p className="panel-label">Reveal</p>
               <strong>{correctGuess ? "You found the Clanker Faker" : "The Clanker Faker got away"}</strong>
               <p>The highlighted clanker was secretly human. Keep scrubbing the replay to study the run.</p>
+              <ReviewScoreFeedback
+                correctGuess={correctGuess}
+                result={reviewResult}
+                saveState={reviewSaveState}
+              />
             </div>
 
+            <ClankerEventLogPanel
+              title="Faker log"
+              log={inspectedEventLog}
+              replayTime={replayTime}
+              onJumpToEvent={handleJumpToEvent}
+              emptyCopy="The reveal log will appear once the run is available."
+            />
+
             <div className="side-section">
-              <p className="panel-label">Challenge back</p>
-              <strong>{correctGuess ? "Now see if they can spot you" : "Think you can blend in better?"}</strong>
+              <p className="panel-label">Next round</p>
+              <strong>{correctGuess ? "Keep the streak alive" : "Run it back"}</strong>
               <p>
                 {correctGuess
-                  ? "Record your own run and send a challenge back."
-                  : "Record your own run, become the fake clanker, and send it back."}
+                  ? "Review another queued run or become the faker yourself."
+                  : "Study the reveal, then try another review or record a sneakier run."}
               </p>
             </div>
 
-            <button className="primary-button primary-button--wide" type="button" onClick={onChallengeBack}>
+            <button className="primary-button primary-button--wide" type="button" onClick={onSpotAnother}>
+              <Search size={20} aria-hidden="true" />
+              Spot Another Faker
+            </button>
+            <button className="secondary-button primary-button--wide" type="button" onClick={onRecordRun}>
               <Send size={20} aria-hidden="true" />
-              Challenge Back
+              Record Your Run
             </button>
           </>
         ) : (
           <>
             <div className="side-section">
-              <p className="panel-label">Accusation</p>
+              <p className="panel-label">{isPreviewOnly ? "Preview" : "Accusation"}</p>
               <strong>{visibleSelectedActor ? "Clanker selected" : "No clanker selected"}</strong>
-              <p>Click a clanker on the replay canvas, then lock the guess.</p>
+              <p>
+                {isPreviewOnly
+                  ? "Click clankers to study the run. Previewing your own replay does not submit guesses."
+                  : "Click a clanker on the replay canvas, then lock the guess."}
+              </p>
             </div>
 
-            <button
-              className="primary-button primary-button--wide"
-              type="button"
-              disabled={!visibleSelectedActorId}
-              onClick={handleConfirmGuess}
-            >
-              <Check size={20} aria-hidden="true" />
-              Confirm Guess
-            </button>
+            <ClankerEventLogPanel
+              title="Clanker log"
+              log={inspectedEventLog}
+              replayTime={replayTime}
+              onJumpToEvent={handleJumpToEvent}
+              emptyCopy="Select a visible clanker to inspect its trail, token pickups, pops, and other observable events."
+            />
+
+            {!isPreviewOnly && (
+              <button
+                className="primary-button primary-button--wide"
+                type="button"
+                disabled={!visibleSelectedActorId}
+                onClick={handleConfirmGuess}
+              >
+                <Check size={20} aria-hidden="true" />
+                Confirm Guess
+              </button>
+            )}
           </>
         )}
       </aside>
@@ -243,15 +357,28 @@ export default function ReplayPhase({
             aria-modal="true"
             aria-labelledby="challenge-modal-title"
           >
-            <h1 id="challenge-modal-title">Someone is challenging you to spot their Clanker Faker</h1>
-            <p>
-              One of these bots was secretly controlled by a human. Their job was to collect 3 blue
-              points in 45 seconds while blending in with the clankers.
-            </p>
-            <p>
-              Watch the round, study the movement, and pick the human controlled bot that's the
-              Clanker Faker.
-            </p>
+            {introKind === "challenge" ? (
+              <>
+                <h1 id="challenge-modal-title">Someone is challenging you to spot their Clanker Faker</h1>
+                <p>
+                  One of these bots was secretly controlled by a human. Their job was to finish a
+                  public task in {ROUND_DURATION} seconds while blending in with the clankers.
+                </p>
+                <p>
+                  Watch the round, study the movement, and pick the human controlled bot that's the
+                  Clanker Faker.
+                </p>
+              </>
+            ) : (
+              <>
+                <h1 id="challenge-modal-title">Spot the queued Clanker Faker</h1>
+                <p>
+                  This replay came from another faker run. One clanker was secretly controlled by a
+                  human trying to finish the public task without standing out.
+                </p>
+                <p>Watch the movement, scrub the timeline, and lock in the clanker that feels too human.</p>
+              </>
+            )}
             <button className="primary-button" type="button" onClick={handleStartChallenge}>
               <Play size={20} aria-hidden="true" />
               Watch Replay
@@ -261,6 +388,390 @@ export default function ReplayPhase({
       )}
     </main>
   );
+}
+
+function ClankerEventLogPanel({
+  title,
+  log,
+  replayTime,
+  onJumpToEvent,
+  emptyCopy,
+}: {
+  title: string;
+  log: ReplayEventLog | null;
+  replayTime: number;
+  onJumpToEvent: (timestamp: number) => void;
+  emptyCopy: string;
+}) {
+  return (
+    <div className="side-section replay-event-log">
+      <p className="panel-label">{title}</p>
+      {log ? (
+        <>
+          <div className="replay-event-stats" aria-label={`${title} summary`}>
+            <ReplayEventStat label="Tokens" value={log.stats.tokens} />
+            <ReplayEventStat label="Pops" value={log.stats.pops} />
+            <ReplayEventStat label="Sweeper hits" value={log.stats.sweeperHits} />
+            <ReplayEventStat label="Tree hides" value={log.stats.treeHides} />
+            <ReplayEventStat label="Walkways" value={log.stats.walkwayRides} />
+            <ReplayEventStat label="Alarm corners" value={log.stats.alarmCorners} />
+          </div>
+          {log.events.length > 0 ? (
+            <ol className="replay-event-list" aria-label={`${title} timeline`}>
+              {log.events.map((event) => (
+                <li key={event.id}>
+                  <button
+                    className={`replay-event replay-event--${event.kind} ${
+                      Math.abs(event.timestamp - replayTime) < 0.25 ? "is-current" : ""
+                    }`}
+                    type="button"
+                    onClick={() => onJumpToEvent(event.timestamp)}
+                  >
+                    <time>{formatReplayTimestamp(event.timestamp)}</time>
+                    <span>
+                      <strong>{event.title}</strong>
+                      <small>{event.detail}</small>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="replay-event-log__empty">No notable events recorded for this clanker.</p>
+          )}
+        </>
+      ) : (
+        <p className="replay-event-log__empty">{emptyCopy}</p>
+      )}
+    </div>
+  );
+}
+
+function ReplayEventStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function createReplayEventLog(recording: ReplayRecording, actorId: string): ReplayEventLog {
+  const stats: ReplayEventLogStats = {
+    tokens: 0,
+    sweeperHits: 0,
+    pops: 0,
+    treeHides: 0,
+    walkwayRides: 0,
+    alarmCorners: 0,
+  };
+  const events: ReplayEventLogEntry[] = [];
+  const reachedAlarmLights = new Set<string>();
+  let previousActor: ActorSnapshot | undefined;
+  let previousUnderCover = false;
+  let previousWalkwayId: string | null = null;
+
+  function addEvent(kind: ReplayEventKind, timestamp: number, title: string, detail: string) {
+    events.push({
+      id: `${actorId}-${kind}-${events.length}`,
+      kind,
+      timestamp: Number(timestamp.toFixed(2)),
+      title,
+      detail,
+    });
+  }
+
+  for (const snapshot of recording.snapshots) {
+    const actor = findSnapshotActor(snapshot, actorId);
+    if (!actor) {
+      continue;
+    }
+
+    const underCover = isActorUnderCover(actor, recording);
+    const walkwayId = getWalkwayIdForActor(actor, recording.map);
+    const alarmLightId = getReachedAlarmLightId(actor, snapshot.alarm, recording.map);
+
+    if (previousActor) {
+      const tokenDelta = Math.max(0, actor.collected - previousActor.collected);
+      for (let index = 0; index < tokenDelta; index += 1) {
+        stats.tokens += 1;
+        addEvent("token", snapshot.timestamp, "Token collected", `Picked up token ${stats.tokens}`);
+      }
+
+      if (!previousActor.stunned && actor.stunned) {
+        stats.sweeperHits += 1;
+        addEvent("sweeper-hit", snapshot.timestamp, "Sweeper hit", "Stunned by an enemy sweeper");
+      }
+
+      const previousRespawnProgress = previousActor.respawnProgress ?? 0;
+      const respawnProgress = actor.respawnProgress ?? 0;
+      const respawnJump =
+        previousActor.stunned &&
+        !actor.stunned &&
+        distanceBetweenActors(previousActor, actor) > 80 &&
+        actor.collected <= previousActor.collected;
+      if ((previousRespawnProgress <= 0 && respawnProgress > 0) || respawnJump) {
+        stats.pops += 1;
+        addEvent("pop", snapshot.timestamp, "Popped and respawned", "Progress reset after a sweeper takedown");
+      }
+
+      if (!previousUnderCover && underCover) {
+        stats.treeHides += 1;
+        addEvent("tree-enter", snapshot.timestamp, "Entered tree hideout", "Hidden under the canopy");
+      }
+
+      if (previousUnderCover && !underCover) {
+        addEvent("tree-exit", snapshot.timestamp, "Left tree hideout", "Returned to open view");
+      }
+
+      if (!previousWalkwayId && walkwayId) {
+        stats.walkwayRides += 1;
+        addEvent("walkway", snapshot.timestamp, "Rode walkway", "Stepped onto a moving walkway");
+      }
+    }
+
+    if (alarmLightId && !reachedAlarmLights.has(alarmLightId)) {
+      reachedAlarmLights.add(alarmLightId);
+      stats.alarmCorners += 1;
+      addEvent("alarm", snapshot.timestamp, "Reached alarm corner", "Arrived near the flashing corner");
+    }
+
+    previousActor = actor;
+    previousUnderCover = underCover;
+    previousWalkwayId = walkwayId;
+  }
+
+  return { stats, events };
+}
+
+function getWalkwayIdForActor(actor: ActorSnapshot, map: MapLayer): string | null {
+  const point = actorToPoint(actor);
+  return map.movingWalkways.find((walkway) => isPointInRect(point, walkway.rect))?.id ?? null;
+}
+
+function getReachedAlarmLightId(actor: ActorSnapshot, alarm: AlarmSnapshot | null, map: MapLayer): string | null {
+  if (!alarm) {
+    return null;
+  }
+
+  const light = map.alarmLights.find((candidate) => candidate.id === alarm.lightId);
+  if (!light) {
+    return null;
+  }
+
+  return distanceBetweenPoints(actorToPoint(actor), light.rallyPoint) <= ALARM_CORNER_RADIUS ? light.id : null;
+}
+
+function actorToPoint(actor: ActorSnapshot): Vector {
+  return { x: actor.x, y: actor.y };
+}
+
+function isPointInRect(point: Vector, rect: Rect): boolean {
+  return (
+    point.x >= rect.x &&
+    point.x <= rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y <= rect.y + rect.height
+  );
+}
+
+function distanceBetweenActors(a: ActorSnapshot, b: ActorSnapshot): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function distanceBetweenPoints(a: Vector, b: Vector): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function ReviewScoreFeedback({
+  correctGuess,
+  result,
+  saveState,
+}: {
+  correctGuess: boolean;
+  result: ReviewResult | null;
+  saveState: ReviewSaveState;
+}) {
+  if (saveState === "idle") {
+    return null;
+  }
+
+  const winner = correctGuess ? "Spotter win" : "Faker win";
+  const rating = result?.rating;
+  const hasRatedResult = Boolean(rating?.rated);
+  const hasScoreChange = saveState === "saved" && result && !result.alreadySubmitted;
+
+  return (
+    <section className="score-feedback" aria-label="Scoring feedback">
+      <div className="score-feedback__header">
+        <span
+          className={`score-feedback__pill ${
+            correctGuess ? "score-feedback__pill--spotter" : "score-feedback__pill--faker"
+          }`}
+        >
+          <Trophy size={15} aria-hidden="true" />
+          {winner}
+        </span>
+        <strong>{getScoreFeedbackTitle(saveState, correctGuess)}</strong>
+        <p>{getScoreFeedbackCopy(saveState, correctGuess)}</p>
+      </div>
+
+      <div className="score-feedback__rows">
+        <ScoreFeedbackRow label="Match point" value={getMatchPointCopy(saveState, correctGuess, result)} />
+        {result && (
+          <ScoreFeedbackRow
+            label="Run record"
+            value={`Fooled ${result.aggregate.fakerWins}/${result.aggregate.reviewCount} reviewers (${formatPercent(result.aggregate.fooledRate)})`}
+          />
+        )}
+        <ScoreFeedbackRow
+          label="Spotter rating"
+          tone={hasScoreChange ? getDeltaTone(rating?.spotterDelta ?? 0) : "neutral"}
+          value={getRatingCopy(saveState, rating?.spotterDelta, rating?.spotterRating, hasRatedResult)}
+        />
+        <ScoreFeedbackRow
+          label="Faker rating"
+          tone={hasScoreChange ? getDeltaTone(rating?.fakerDelta ?? 0) : "neutral"}
+          value={getRatingCopy(saveState, rating?.fakerDelta, rating?.fakerRating, hasRatedResult)}
+        />
+      </div>
+    </section>
+  );
+}
+
+function ScoreFeedbackRow({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: "positive" | "negative" | "neutral";
+}) {
+  return (
+    <div className="score-feedback__row">
+      <span>{label}</span>
+      <strong className={`score-feedback__value score-feedback__value--${tone}`}>{value}</strong>
+    </div>
+  );
+}
+
+function formatSignedNumber(value: number): string {
+  return value > 0 ? `+${value}` : String(value);
+}
+
+function getScoreFeedbackTitle(state: ReviewSaveState, correctGuess: boolean): string {
+  switch (state) {
+    case "saving":
+      return "Scoring the review";
+    case "saved":
+      return correctGuess ? "Your read counted" : "The faker scored";
+    case "duplicate":
+      return "Already counted";
+    case "unscored":
+      return "Direct challenge only";
+    case "self-review":
+      return "Self-review not scored";
+    case "expired":
+      return "Replay no longer scored";
+    case "failed":
+      return "Revealed, but not scored";
+    default:
+      return correctGuess ? "Spotter win" : "Faker win";
+  }
+}
+
+function getScoreFeedbackCopy(state: ReviewSaveState, correctGuess: boolean): string {
+  switch (state) {
+    case "saving":
+      return "Saving the result and updating the run record.";
+    case "saved":
+      return correctGuess
+        ? "The spotter gets the match point and the faker loses this review."
+        : "The faker fooled this review and gets the match point.";
+    case "duplicate":
+      return "You already reviewed this replay, so the leaderboard was left unchanged.";
+    case "unscored":
+      return correctGuess
+        ? "You found them, but direct challenge links do not affect leaderboard ratings."
+        : "The faker fooled you, but direct challenge links do not affect leaderboard ratings.";
+    case "self-review":
+      return "This replay was not scored as a queue review. Use Spot a Faker to review queued runs.";
+    case "expired":
+      return "This replay is no longer available for leaderboard scoring, but the reveal still works.";
+    case "failed":
+      return "The reveal still works, but the scoring service could not be reached.";
+    default:
+      return "";
+  }
+}
+
+function getMatchPointCopy(state: ReviewSaveState, correctGuess: boolean, result: ReviewResult | null): string {
+  if (state === "saving") {
+    return "Pending";
+  }
+
+  if (state === "failed") {
+    return "Not saved";
+  }
+
+  if (state === "unscored" || state === "self-review" || state === "expired") {
+    return "No leaderboard point";
+  }
+
+  if (state === "duplicate" || result?.alreadySubmitted) {
+    return "Already counted";
+  }
+
+  return correctGuess ? "Spotter +1" : "Faker +1";
+}
+
+function getRatingCopy(
+  state: ReviewSaveState,
+  delta: number | undefined,
+  rating: number | null | undefined,
+  rated: boolean,
+): string {
+  if (state === "saving") {
+    return "Pending";
+  }
+
+  if (state === "failed") {
+    return "Not saved";
+  }
+
+  if (state === "unscored" || state === "self-review" || state === "expired" || !rated || rating == null) {
+    return "No change";
+  }
+
+  if (state === "duplicate" || delta == null) {
+    return `Current ${Math.round(rating)}`;
+  }
+
+  return `${formatSignedNumber(delta)} to ${Math.round(rating)}`;
+}
+
+function getDeltaTone(delta: number): "positive" | "negative" | "neutral" {
+  if (delta > 0) {
+    return "positive";
+  }
+
+  if (delta < 0) {
+    return "negative";
+  }
+
+  return "neutral";
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatReplayTimestamp(seconds: number): string {
+  const clamped = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(clamped / 60);
+  const remainingSeconds = clamped % 60;
+  return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
 }
 
 function isActorUnderCover(actor: ActorSnapshot, recording: ReplayRecording): boolean {

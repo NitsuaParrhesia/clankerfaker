@@ -1,8 +1,11 @@
 export type GamePhase =
   | "title"
+  | "leaderboard"
   | "hide"
   | "invalid-run"
   | "handoff"
+  | "loading-pool"
+  | "pool-empty"
   | "replay"
   | "results"
   | "loading-share"
@@ -50,6 +53,48 @@ export type CoverZone = {
   radius: number;
 };
 
+export type AlarmLightId = "northWest" | "northEast" | "southWest" | "southEast";
+
+export type AlarmPhase = "idle" | "warning" | "active" | "done";
+
+export type AlarmLight = {
+  id: AlarmLightId;
+  position: Vector;
+  rallyPoint: Vector;
+};
+
+export type AlarmState = {
+  lightId: AlarmLightId;
+  warningAt: number;
+  activeAt: number;
+  endsAt: number;
+  phase: AlarmPhase;
+};
+
+export type AlarmSnapshot = {
+  lightId: AlarmLightId;
+  phase: Exclude<AlarmPhase, "idle" | "done">;
+  progress: number;
+};
+
+export type SweeperState = {
+  id: string;
+  position: Vector;
+  velocity: Vector;
+  heading: number;
+  targetIndex: number;
+  pauseTimer: number;
+  radius: number;
+  speed: number;
+};
+
+export type SweeperSnapshot = {
+  id: string;
+  x: number;
+  y: number;
+  heading: number;
+};
+
 export type ActorKind = "human" | "bot";
 
 export type BotPersonality =
@@ -61,13 +106,34 @@ export type BotPersonality =
   | "Efficient"
   | "Distracted";
 
-export type BotTargetKind = "item" | "exit" | "wander" | "actor" | "decor" | "loop";
+export type BotTargetKind = "item" | "task" | "exit" | "wander" | "actor" | "decor" | "loop" | "alarm";
+
+export type TaskStepKind = "collect" | "terminal" | "alarm" | "walkway";
+
+export type TaskStep = {
+  id: string;
+  kind: TaskStepKind;
+  label: string;
+  description: string;
+  targetId?: string;
+  position?: Vector;
+  radius?: number;
+  rect?: Rect;
+};
+
+export type RoundTask = {
+  title: string;
+  description: string;
+  required: number;
+  steps: TaskStep[];
+};
 
 export type BotBrain = {
   personality: BotPersonality;
   target: Vector;
   targetKind: BotTargetKind;
   targetActorId?: string;
+  targetTaskId?: string;
   homeZone: MapZoneId;
   roamZone?: MapZoneId;
   zoneCommitmentTimer: number;
@@ -96,6 +162,14 @@ export type Actor = {
   speed: number;
   radius: number;
   collected: number;
+  stunnedUntil: number;
+  stunCooldownUntil: number;
+  respawnAt: number;
+  respawnEffectUntil: number;
+  completedTaskIds: string[];
+  taskHoldStepId: string | null;
+  taskHoldTime: number;
+  taskCooldownUntil: number;
   bot?: BotBrain;
 };
 
@@ -126,6 +200,7 @@ export type MapLayer = {
   exit: Rect;
   decor: DecorPoint[];
   coverZones: CoverZone[];
+  alarmLights: AlarmLight[];
 };
 
 export type MovingWalkway = {
@@ -140,6 +215,8 @@ export type InputState = {
   down: boolean;
   left: boolean;
   right: boolean;
+  moveX: number;
+  moveY: number;
 };
 
 export type GameStatus = "running" | "human-won" | "timeout";
@@ -160,6 +237,10 @@ export type GameState = {
   humanCollected: number;
   requiredItems: number;
   botCollections: number;
+  task: RoundTask;
+  alarm: AlarmState;
+  sweeper: SweeperState;
+  sweepers: SweeperState[];
 };
 
 export type ActorSnapshot = {
@@ -169,6 +250,9 @@ export type ActorSnapshot = {
   y: number;
   heading: number;
   collected: number;
+  stunned: boolean;
+  takedownProgress?: number;
+  respawnProgress?: number;
   bot?: BotDebugSnapshot;
 };
 
@@ -178,6 +262,7 @@ export type BotDebugSnapshot = {
   state: "seeking" | "pathing" | "paused" | "unsticking";
   target: Vector;
   finalTarget: Vector;
+  targetTaskId?: string;
   path: Vector[];
   pathIndex: number;
   targetZone?: MapZoneId;
@@ -203,7 +288,11 @@ export type ReplaySnapshot = {
   items: ItemSnapshot[];
   humanCollected: number;
   objectiveReady: boolean;
+  completedTaskIds: string[];
   status: GameStatus;
+  alarm: AlarmSnapshot | null;
+  sweeper: SweeperSnapshot | null;
+  sweepers?: SweeperSnapshot[];
 };
 
 export type RoundOutcome = {
@@ -212,6 +301,7 @@ export type RoundOutcome = {
   humanCollected: number;
   requiredItems: number;
   botCollections: number;
+  taskTitle: string;
   reason: "scored" | "timeout";
 };
 
@@ -220,6 +310,7 @@ export type ReplayRecording = {
   duration: number;
   humanActorId: string;
   requiredItems: number;
+  task: RoundTask;
   outcome: RoundOutcome;
   map: MapLayer;
 };

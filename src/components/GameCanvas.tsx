@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import facilityMapUrl from "../assets/facility-map.png";
-import { createBotDebugSnapshot } from "../game/replay";
+import { createSnapshot } from "../game/replay";
 import {
   ACTOR_RADIUS,
   ACTOR_SPRITE_SIZE,
@@ -8,7 +8,11 @@ import {
   GAME_HEIGHT,
   GAME_WIDTH,
   ITEM_RADIUS,
+  ITEM_SPRITE_SIZE,
   ROBOT_SPRITE_ROTATION_OFFSET,
+  SWEEPER_RADIUS,
+  SWEEPER_SPRITE_ROTATION_OFFSET,
+  SWEEPER_SPRITE_SIZE,
 } from "../game/constants";
 import type {
   ActorSnapshot,
@@ -17,8 +21,29 @@ import type {
   Rect,
   ReplayRecording,
   ReplaySnapshot,
+  RoundTask,
+  TaskStep,
   Vector,
 } from "../game/types";
+
+const ALARM_LIGHT_SPRITE_SIZE = 44;
+const STUN_SPRITE_FRAME_SIZE = 512;
+const STUN_SPRITE_FRAME_COUNT = 5;
+const STUN_SPRITE_FRAME_RATE = 12;
+const STUN_EFFECT_DRAW_SIZE = 78;
+const POP_SPRITE_FRAME_SIZE = 444;
+const POP_SPRITE_FRAME_COUNT = 8;
+const POP_EFFECT_START_PROGRESS = 0.76;
+const POP_EFFECT_DRAW_SIZE = 104;
+const RESPAWN_SPRITE_FRAME_SIZE = 512;
+const RESPAWN_SPRITE_FRAME_COUNT = 6;
+const RESPAWN_EFFECT_DRAW_SIZE = 118;
+
+type AlarmLightImages = {
+  off: HTMLImageElement | null;
+  on: HTMLImageElement | null;
+  glow: HTMLImageElement | null;
+};
 
 type GameCanvasProps =
   | {
@@ -31,6 +56,7 @@ type GameCanvasProps =
       trailPoints?: Vector[];
       debugOverlay?: boolean;
       showNumberBadges?: boolean;
+      countdownHighlightActorId?: string | null;
       onActorClick?: (actorId: string) => void;
     }
   | {
@@ -44,6 +70,7 @@ type GameCanvasProps =
       trailPoints?: Vector[];
       debugOverlay?: boolean;
       showNumberBadges?: boolean;
+      countdownHighlightActorId?: string | null;
       onActorClick?: (actorId: string) => void;
     };
 
@@ -51,33 +78,22 @@ export default function GameCanvas(props: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [mapImage, setMapImage] = useState<HTMLImageElement | null>(null);
   const [robotImage, setRobotImage] = useState<HTMLImageElement | null>(null);
+  const [sweeperImage, setSweeperImage] = useState<HTMLImageElement | null>(null);
+  const [itemImage, setItemImage] = useState<HTMLImageElement | null>(null);
+  const [stunImage, setStunImage] = useState<HTMLImageElement | null>(null);
+  const [popImage, setPopImage] = useState<HTMLImageElement | null>(null);
+  const [respawnImage, setRespawnImage] = useState<HTMLImageElement | null>(null);
+  const [alarmLightOffImage, setAlarmLightOffImage] = useState<HTMLImageElement | null>(null);
+  const [alarmLightOnImage, setAlarmLightOnImage] = useState<HTMLImageElement | null>(null);
+  const [alarmLightGlowImage, setAlarmLightGlowImage] = useState<HTMLImageElement | null>(null);
   const map = props.mode === "hide" ? props.state.mapLayer : props.recording.map;
+  const task = props.mode === "hide" ? props.state.task : props.recording.task;
   const frame = useMemo(() => {
     if (props.mode !== "hide") {
       return props.frame;
     }
 
-    return {
-      timestamp: props.state.timeElapsed,
-      actors: props.state.actors.map((actor) => ({
-        id: actor.id,
-        label: actor.label,
-        x: actor.position.x,
-        y: actor.position.y,
-        heading: actor.heading,
-        collected: actor.collected,
-        bot: createBotDebugSnapshot(actor),
-      })),
-      items: props.state.items.map((item) => ({
-        id: item.id,
-        x: item.position.x,
-        y: item.position.y,
-        active: item.active,
-      })),
-      humanCollected: props.state.humanCollected,
-      objectiveReady: props.state.humanCollected >= props.state.requiredItems,
-      status: props.state.status,
-    };
+    return createSnapshot(props.state);
   }, [props]);
 
   useEffect(() => {
@@ -100,10 +116,130 @@ export default function GameCanvas(props: GameCanvasProps) {
     const image = new Image();
     image.onload = () => {
       if (!cancelled) {
+        setItemImage(image);
+      }
+    };
+    image.src = "/assets/token.png";
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) {
+        setRespawnImage(image);
+      }
+    };
+    image.src = "/assets/clanker-respawn-sprite.png?v=2";
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) {
+        setStunImage(image);
+      }
+    };
+    image.src = "/assets/clanker-stun-sprite.png?v=1";
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) {
+        setPopImage(image);
+      }
+    };
+    image.src = "/assets/clanker-pop-sprite.png";
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) {
+        setAlarmLightOffImage(image);
+      }
+    };
+    image.src = "/assets/red-alarm-light-off.png";
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) {
+        setAlarmLightOnImage(image);
+      }
+    };
+    image.src = "/assets/red-alarm-light-on.png";
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) {
+        setAlarmLightGlowImage(image);
+      }
+    };
+    image.src = "/assets/red-alarm-light-glow.png";
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) {
         setRobotImage(image);
       }
     };
     image.src = "/assets/robot.png";
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) {
+        setSweeperImage(image);
+      }
+    };
+    image.src = "/assets/stun-bot.png";
 
     return () => {
       cancelled = true;
@@ -128,8 +264,19 @@ export default function GameCanvas(props: GameCanvasProps) {
     drawGame(context, {
       frame,
       map,
+      task,
       mapImage,
       robotImage,
+      sweeperImage,
+      itemImage,
+      stunImage,
+      popImage,
+      respawnImage,
+      alarmLightImages: {
+        off: alarmLightOffImage,
+        on: alarmLightOnImage,
+        glow: alarmLightGlowImage,
+      },
       mode: props.mode,
       selectedActorId: props.selectedActorId ?? null,
       guessActorId: props.guessActorId ?? null,
@@ -138,18 +285,29 @@ export default function GameCanvas(props: GameCanvasProps) {
       trailPoints: props.trailPoints ?? [],
       debugOverlay: props.debugOverlay ?? false,
       showNumberBadges: props.showNumberBadges ?? false,
+      countdownHighlightActorId: props.countdownHighlightActorId ?? null,
     });
   }, [
     frame,
     map,
+    task,
     mapImage,
     robotImage,
+    sweeperImage,
+    itemImage,
+    stunImage,
+    popImage,
+    respawnImage,
+    alarmLightOffImage,
+    alarmLightOnImage,
+    alarmLightGlowImage,
     props.debugOverlay,
     props.guessActorId,
     props.humanActorId,
     props.reveal,
     props.selectedActorId,
     props.showNumberBadges,
+    props.countdownHighlightActorId,
     props.trailPoints,
   ]);
 
@@ -197,8 +355,15 @@ function drawGame(
   options: {
     frame: ReplaySnapshot;
     map: MapLayer;
+    task: RoundTask;
     mapImage: HTMLImageElement | null;
     robotImage: HTMLImageElement | null;
+    sweeperImage: HTMLImageElement | null;
+    itemImage: HTMLImageElement | null;
+    stunImage: HTMLImageElement | null;
+    popImage: HTMLImageElement | null;
+    respawnImage: HTMLImageElement | null;
+    alarmLightImages: AlarmLightImages;
     mode: "hide" | "replay" | "results";
     selectedActorId: string | null;
     guessActorId: string | null;
@@ -207,6 +372,7 @@ function drawGame(
     trailPoints: Vector[];
     debugOverlay: boolean;
     showNumberBadges: boolean;
+    countdownHighlightActorId: string | null;
   },
 ) {
   context.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
@@ -214,9 +380,14 @@ function drawGame(
   if (options.debugOverlay) {
     drawDebugOverlay(context, options.map, options.frame);
   }
-  drawItems(context, options.frame);
+  drawAlarmLights(context, options.map, options.frame, options.alarmLightImages);
+  if (options.mode === "hide") {
+    drawTaskTargets(context, options.task, options.frame);
+  }
+  drawItems(context, options.frame, options.itemImage);
   drawTrail(context, options.trailPoints, options.map);
   drawActors(context, options);
+  drawSweepers(context, options.frame, options.sweeperImage);
   drawNumberBadges(context, options);
   drawForegroundOcclusion(context, options.map);
 }
@@ -262,7 +433,7 @@ function drawBackground(context: CanvasRenderingContext2D, image: HTMLImageEleme
   }
 }
 
-function drawItems(context: CanvasRenderingContext2D, frame: ReplaySnapshot) {
+function drawItems(context: CanvasRenderingContext2D, frame: ReplaySnapshot, itemImage: HTMLImageElement | null) {
   for (const [index, item] of frame.items.entries()) {
     if (!item.active) {
       continue;
@@ -276,6 +447,23 @@ function drawItems(context: CanvasRenderingContext2D, frame: ReplaySnapshot) {
     context.arc(item.x, item.y, glowRadius, 0, Math.PI * 2);
     context.fill();
 
+    if (itemImage?.complete && itemImage.naturalWidth > 0) {
+      const bob = Math.sin(frame.timestamp * 5 + index * 0.73) * 1.2;
+      context.save();
+      context.translate(item.x, item.y + bob);
+      context.shadowColor = "rgba(38, 116, 232, 0.32)";
+      context.shadowBlur = 8 + pulse * 4;
+      context.drawImage(
+        itemImage,
+        -ITEM_SPRITE_SIZE / 2,
+        -ITEM_SPRITE_SIZE / 2,
+        ITEM_SPRITE_SIZE,
+        ITEM_SPRITE_SIZE,
+      );
+      context.restore();
+      continue;
+    }
+
     context.fillStyle = COLORS.item;
     context.beginPath();
     context.arc(item.x, item.y, ITEM_RADIUS, 0, Math.PI * 2);
@@ -287,6 +475,289 @@ function drawItems(context: CanvasRenderingContext2D, frame: ReplaySnapshot) {
     context.arc(item.x, item.y, ITEM_RADIUS + 1.5, 0, Math.PI * 2);
     context.stroke();
   }
+}
+
+function drawAlarmLights(
+  context: CanvasRenderingContext2D,
+  map: MapLayer,
+  frame: ReplaySnapshot,
+  images: AlarmLightImages,
+) {
+  const alarm = frame.alarm;
+
+  if (alarm) {
+    const borderPulse = (Math.sin(frame.timestamp * 22) + 1) * 0.5;
+    const borderAlpha = alarm.phase === "active" ? 0.18 + borderPulse * 0.2 : 0.08 + borderPulse * 0.1;
+
+    context.save();
+    context.strokeStyle = `rgba(224, 45, 45, ${borderAlpha})`;
+    context.lineWidth = alarm.phase === "active" ? 12 : 7;
+    context.strokeRect(8, 8, GAME_WIDTH - 16, GAME_HEIGHT - 16);
+    context.restore();
+  }
+
+  for (const light of map.alarmLights) {
+    const isTriggered = alarm?.lightId === light.id;
+    const blink = isTriggered ? (Math.sin(frame.timestamp * 24) + 1) * 0.5 : 0;
+    const sprite = getAlarmLightSprite(images, isTriggered, alarm?.phase ?? "idle", blink);
+
+    if (sprite?.complete && sprite.naturalWidth > 0) {
+      drawAlarmLightSprite(context, light.position, sprite, isTriggered, blink);
+    } else {
+      drawProceduralAlarmLight(context, light.position, isTriggered, blink);
+    }
+
+    if (isTriggered && alarm.phase === "active") {
+      drawAlarmRallyPulse(context, light.rallyPoint, frame.timestamp, alarm.progress);
+    }
+  }
+}
+
+function getAlarmLightSprite(
+  images: AlarmLightImages,
+  isTriggered: boolean,
+  phase: string,
+  blink: number,
+): HTMLImageElement | null {
+  if (!isTriggered) {
+    return images.off;
+  }
+
+  if (phase === "active" && blink > 0.42) {
+    return images.glow ?? images.on;
+  }
+
+  if (phase === "warning" && blink < 0.34) {
+    return images.off ?? images.on;
+  }
+
+  return images.on ?? images.glow ?? images.off;
+}
+
+function drawAlarmLightSprite(
+  context: CanvasRenderingContext2D,
+  position: Vector,
+  image: HTMLImageElement,
+  isTriggered: boolean,
+  blink: number,
+) {
+  const size = ALARM_LIGHT_SPRITE_SIZE + (isTriggered ? blink * 4 : 0);
+  const glowRadius = ALARM_LIGHT_SPRITE_SIZE * 0.55 + blink * 11;
+
+  context.save();
+  if (isTriggered) {
+    context.fillStyle = `rgba(224, 45, 45, ${0.12 + blink * 0.2})`;
+    context.beginPath();
+    context.arc(position.x, position.y, glowRadius, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  context.imageSmoothingEnabled = true;
+  context.drawImage(image, position.x - size / 2, position.y - size / 2, size, size);
+  context.restore();
+}
+
+function drawProceduralAlarmLight(
+  context: CanvasRenderingContext2D,
+  position: Vector,
+  isTriggered: boolean,
+  blink: number,
+) {
+  const glowAlpha = isTriggered ? 0.24 + blink * 0.32 : 0.08;
+  const coreAlpha = isTriggered ? 0.72 + blink * 0.28 : 0.42;
+  const glowRadius = isTriggered ? 18 + blink * 10 : 13;
+
+  context.save();
+  context.fillStyle = `rgba(224, 45, 45, ${glowAlpha})`;
+  context.beginPath();
+  context.arc(position.x, position.y, glowRadius, 0, Math.PI * 2);
+  context.fill();
+
+  context.fillStyle = "rgba(38, 16, 16, 0.88)";
+  roundRect(context, position.x - 10, position.y - 10, 20, 20, 5);
+  context.fill();
+
+  context.fillStyle = `rgba(255, 65, 65, ${coreAlpha})`;
+  context.beginPath();
+  context.arc(position.x, position.y, isTriggered ? 6.5 + blink * 1.5 : 5, 0, Math.PI * 2);
+  context.fill();
+
+  context.strokeStyle = isTriggered ? "rgba(255, 230, 230, 0.92)" : "rgba(255, 190, 190, 0.42)";
+  context.lineWidth = isTriggered ? 2 : 1.2;
+  context.beginPath();
+  context.arc(position.x, position.y, 9, 0, Math.PI * 2);
+  context.stroke();
+  context.restore();
+}
+
+function drawAlarmRallyPulse(
+  context: CanvasRenderingContext2D,
+  point: Vector,
+  timestamp: number,
+  progress: number,
+) {
+  const pulse = (Math.sin(timestamp * 16) + 1) * 0.5;
+  const radius = 24 + pulse * 12 + progress * 10;
+
+  context.save();
+  context.fillStyle = "rgba(224, 45, 45, 0.12)";
+  context.beginPath();
+  context.arc(point.x, point.y, radius + 10, 0, Math.PI * 2);
+  context.fill();
+
+  context.strokeStyle = `rgba(224, 45, 45, ${0.52 + pulse * 0.34})`;
+  context.lineWidth = 4;
+  context.setLineDash([9, 7]);
+  context.beginPath();
+  context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+  context.stroke();
+  context.setLineDash([]);
+
+  context.fillStyle = "rgba(224, 45, 45, 0.9)";
+  context.beginPath();
+  context.arc(point.x, point.y, 4.5, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+}
+
+function drawTaskTargets(context: CanvasRenderingContext2D, task: RoundTask, frame: ReplaySnapshot) {
+  for (const [index, step] of task.steps.entries()) {
+    if (step.kind === "collect") {
+      continue;
+    }
+
+    const completed = frame.completedTaskIds.includes(step.id);
+    const pulse = glowPulse(frame.timestamp, index * 0.28);
+    const stroke = completed ? "rgba(40, 157, 96, 0.86)" : "rgba(243, 165, 29, 0.88)";
+    const fill = completed ? "rgba(40, 157, 96, 0.12)" : "rgba(243, 165, 29, 0.16)";
+    const glow = completed ? "rgba(40, 157, 96, 0.11)" : `rgba(255, 198, 74, ${0.12 + pulse * 0.1})`;
+
+    if (step.rect) {
+      drawRectTaskTarget(context, step, { stroke, fill, glow, completed, timestamp: frame.timestamp });
+      continue;
+    }
+
+    if (step.position) {
+      drawPointTaskTarget(context, step, { stroke, fill, glow, completed, pulse });
+    }
+  }
+}
+
+function drawPointTaskTarget(
+  context: CanvasRenderingContext2D,
+  step: TaskStep,
+  options: {
+    stroke: string;
+    fill: string;
+    glow: string;
+    completed: boolean;
+    pulse: number;
+  },
+) {
+  if (!step.position) {
+    return;
+  }
+
+  const radius = (step.radius ?? 27) + (options.completed ? 0 : options.pulse * 3);
+
+  context.save();
+  context.fillStyle = options.glow;
+  context.beginPath();
+  context.arc(step.position.x, step.position.y, radius + 12, 0, Math.PI * 2);
+  context.fill();
+
+  context.fillStyle = options.fill;
+  context.strokeStyle = options.stroke;
+  context.lineWidth = options.completed ? 3 : 2.4;
+  context.setLineDash(options.completed ? [] : [8, 6]);
+  context.beginPath();
+  context.arc(step.position.x, step.position.y, radius, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.setLineDash([]);
+
+  context.fillStyle = options.completed ? "rgba(40, 157, 96, 0.92)" : COLORS.interactable;
+  context.beginPath();
+  context.arc(step.position.x, step.position.y, 4.8, 0, Math.PI * 2);
+  context.fill();
+
+  if (options.completed) {
+    drawTaskCheck(context, step.position.x, step.position.y);
+  }
+
+  context.restore();
+}
+
+function drawRectTaskTarget(
+  context: CanvasRenderingContext2D,
+  step: TaskStep,
+  options: {
+    stroke: string;
+    fill: string;
+    glow: string;
+    completed: boolean;
+    timestamp: number;
+  },
+) {
+  const rect = step.rect;
+  if (!rect) {
+    return;
+  }
+
+  const pulse = (Math.sin(options.timestamp * 8) + 1) * 0.5;
+  const sign = step.targetId === "lower-walkway" ? -1 : 1;
+
+  context.save();
+  context.fillStyle = options.glow;
+  roundRect(context, rect.x - 5, rect.y - 5, rect.width + 10, rect.height + 10, 7);
+  context.fill();
+
+  context.fillStyle = options.fill;
+  context.strokeStyle = options.stroke;
+  context.lineWidth = options.completed ? 3 : 2.4;
+  context.setLineDash(options.completed ? [] : [10, 8]);
+  roundRect(context, rect.x, rect.y, rect.width, rect.height, 6);
+  context.fill();
+  context.stroke();
+  context.setLineDash([]);
+
+  const arrowCount = 3;
+  const centerY = rect.y + rect.height / 2;
+  context.strokeStyle = options.completed ? "rgba(40, 157, 96, 0.76)" : `rgba(243, 165, 29, ${0.68 + pulse * 0.24})`;
+  context.lineWidth = 3;
+  context.lineCap = "round";
+  for (let index = 0; index < arrowCount; index += 1) {
+    const centerX = rect.x + rect.width * ((index + 0.5) / arrowCount);
+    context.beginPath();
+    context.moveTo(centerX - sign * 10, centerY - 8);
+    context.lineTo(centerX + sign * 10, centerY);
+    context.lineTo(centerX - sign * 10, centerY + 8);
+    context.stroke();
+  }
+
+  if (options.completed) {
+    drawTaskCheck(context, rect.x + rect.width - 20, rect.y + 18);
+  }
+
+  context.restore();
+}
+
+function drawTaskCheck(context: CanvasRenderingContext2D, x: number, y: number) {
+  context.save();
+  context.fillStyle = "rgba(40, 157, 96, 0.94)";
+  context.beginPath();
+  context.arc(x, y, 10, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = "rgba(255, 255, 255, 0.96)";
+  context.lineWidth = 2.3;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.beginPath();
+  context.moveTo(x - 4.5, y + 0.4);
+  context.lineTo(x - 1.2, y + 4);
+  context.lineTo(x + 5.2, y - 4.2);
+  context.stroke();
+  context.restore();
 }
 
 function drawDebugOverlay(context: CanvasRenderingContext2D, map: MapLayer, frame: ReplaySnapshot) {
@@ -466,6 +937,10 @@ function botDebugColor(targetKind: string, state: string): string {
       return "rgba(223, 120, 214, 0.94)";
     case "loop":
       return "rgba(71, 197, 116, 0.94)";
+    case "task":
+      return "rgba(243, 165, 29, 0.98)";
+    case "alarm":
+      return "rgba(245, 76, 76, 0.98)";
     case "exit":
       return "rgba(255, 211, 67, 0.96)";
     default:
@@ -483,6 +958,10 @@ function shortTargetKind(targetKind: string): string {
       return "act";
     case "loop":
       return "lop";
+    case "task":
+      return "tsk";
+    case "alarm":
+      return "alm";
     case "exit":
       return "ext";
     default:
@@ -519,7 +998,7 @@ function drawTrail(context: CanvasRenderingContext2D, points: Vector[], map: Map
   for (let index = 1; index < points.length; index += 1) {
     const previous = points[index - 1];
     const current = points[index];
-    if (isPointUnderCover(previous, map) || isPointUnderCover(current, map)) {
+    if (isPointUnderCover(previous, map) || isPointUnderCover(current, map) || distanceBetween(previous, current) > 90) {
       continue;
     }
 
@@ -555,9 +1034,13 @@ function drawActors(
     frame: ReplaySnapshot;
     map: MapLayer;
     robotImage: HTMLImageElement | null;
+    stunImage: HTMLImageElement | null;
+    popImage: HTMLImageElement | null;
+    respawnImage: HTMLImageElement | null;
     selectedActorId: string | null;
     guessActorId: string | null;
     humanActorId: string | null;
+    countdownHighlightActorId: string | null;
     reveal: boolean;
   },
 ) {
@@ -567,7 +1050,11 @@ function drawActors(
     const isSelected = actor.id === options.selectedActorId;
     const isGuess = actor.id === options.guessActorId;
     const isHuman = actor.id === options.humanActorId;
+    const isCountdownHighlight = actor.id === options.countdownHighlightActorId;
     const isCovered = isActorUnderCover(actor, options.map);
+    const takedownProgress = actor.takedownProgress ?? 0;
+    const respawnProgress = actor.respawnProgress ?? 0;
+    const isPopping = takedownProgress >= POP_EFFECT_START_PROGRESS;
 
     if (isCovered && !options.reveal) {
       continue;
@@ -577,10 +1064,238 @@ function drawActors(
       isSelected,
       isGuess,
       isHuman,
+      isCountdownHighlight,
       reveal: options.reveal,
+      timestamp: options.frame.timestamp,
     });
-    drawRobotSprite(context, actor, options.robotImage, 1);
+
+    if (respawnProgress > 0 && !isPopping) {
+      drawRespawnEffect(context, actor, options.respawnImage, respawnProgress);
+    }
+
+    if (!isPopping) {
+      const actorOpacity = respawnProgress > 0 ? Math.min(1, 0.35 + respawnProgress * 1.2) : 1;
+      drawRobotSprite(context, actor, options.robotImage, actorOpacity);
+    }
+
+    if (actor.stunned && !isPopping) {
+      drawStunEffect(context, actor, options.stunImage, options.frame.timestamp);
+    }
+
+    if (isPopping) {
+      drawPopEffect(context, actor, options.popImage, takedownProgress);
+    }
   }
+}
+
+function drawSweepers(context: CanvasRenderingContext2D, frame: ReplaySnapshot, image: HTMLImageElement | null) {
+  const sweepers = frame.sweepers && frame.sweepers.length > 0 ? frame.sweepers : frame.sweeper ? [frame.sweeper] : [];
+
+  for (const sweeper of sweepers) {
+    drawSweeper(context, frame, sweeper, image);
+  }
+}
+
+function drawSweeper(
+  context: CanvasRenderingContext2D,
+  frame: ReplaySnapshot,
+  sweeper: NonNullable<ReplaySnapshot["sweeper"]>,
+  image: HTMLImageElement | null,
+) {
+  if (!sweeper) {
+    return;
+  }
+
+  const pulse = (Math.sin(frame.timestamp * 13) + 1) * 0.5;
+  const scanLength = 28 + pulse * 8;
+  const scanSpread = Math.PI * 0.34;
+  const spriteWidth = SWEEPER_SPRITE_SIZE;
+  const spriteHeight = image?.naturalWidth ? spriteWidth * (image.naturalHeight / image.naturalWidth) : spriteWidth;
+
+  context.save();
+  context.translate(sweeper.x, sweeper.y);
+  context.rotate(sweeper.heading);
+
+  context.fillStyle = `rgba(223, 77, 77, ${0.1 + pulse * 0.08})`;
+  context.beginPath();
+  context.moveTo(0, 0);
+  context.arc(0, 0, scanLength, -scanSpread / 2, scanSpread / 2);
+  context.closePath();
+  context.fill();
+  context.restore();
+
+  context.save();
+  context.strokeStyle = `rgba(255, 66, 66, ${0.28 + pulse * 0.24})`;
+  context.lineWidth = 2.2;
+  context.beginPath();
+  context.arc(sweeper.x, sweeper.y, SWEEPER_RADIUS + 7 + pulse * 3, 0, Math.PI * 2);
+  context.stroke();
+
+  context.fillStyle = `rgba(255, 66, 66, ${0.08 + pulse * 0.08})`;
+  context.beginPath();
+  context.arc(sweeper.x, sweeper.y, SWEEPER_RADIUS + 12 + pulse * 4, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+
+  context.save();
+  context.translate(sweeper.x, sweeper.y);
+  context.rotate(sweeper.heading + SWEEPER_SPRITE_ROTATION_OFFSET);
+  context.imageSmoothingEnabled = true;
+
+  if (image?.complete && image.naturalWidth > 0) {
+    context.drawImage(image, -spriteWidth / 2, -spriteHeight / 2, spriteWidth, spriteHeight);
+  } else {
+    context.fillStyle = "rgba(25, 31, 35, 0.92)";
+    context.strokeStyle = "rgba(250, 250, 250, 0.72)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.arc(0, 0, SWEEPER_RADIUS, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+
+    context.fillStyle = `rgba(255, 66, 66, ${0.72 + pulse * 0.26})`;
+    context.beginPath();
+    context.arc(SWEEPER_RADIUS * 0.45, 0, 4.2, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  context.restore();
+}
+
+function drawStunEffect(
+  context: CanvasRenderingContext2D,
+  actor: ActorSnapshot,
+  image: HTMLImageElement | null,
+  timestamp: number,
+) {
+  if (image?.complete && image.naturalWidth > 0) {
+    const frameIndex = Math.floor(timestamp * STUN_SPRITE_FRAME_RATE) % STUN_SPRITE_FRAME_COUNT;
+    context.save();
+    context.translate(actor.x, actor.y);
+    context.imageSmoothingEnabled = true;
+    context.drawImage(
+      image,
+      frameIndex * STUN_SPRITE_FRAME_SIZE,
+      0,
+      STUN_SPRITE_FRAME_SIZE,
+      STUN_SPRITE_FRAME_SIZE,
+      -STUN_EFFECT_DRAW_SIZE / 2,
+      -STUN_EFFECT_DRAW_SIZE / 2,
+      STUN_EFFECT_DRAW_SIZE,
+      STUN_EFFECT_DRAW_SIZE,
+    );
+    context.restore();
+    return;
+  }
+
+  const pulse = (Math.sin(timestamp * 18) + 1) * 0.5;
+  const radius = ACTOR_SPRITE_SIZE * 0.6 + 5 + pulse * 3;
+
+  context.save();
+  context.strokeStyle = `rgba(255, 196, 67, ${0.58 + pulse * 0.28})`;
+  context.lineWidth = 2.3;
+  context.setLineDash([4, 5]);
+  context.beginPath();
+  context.arc(actor.x, actor.y, radius, 0, Math.PI * 2);
+  context.stroke();
+  context.setLineDash([]);
+
+  context.strokeStyle = `rgba(255, 72, 72, ${0.44 + pulse * 0.24})`;
+  context.lineWidth = 1.8;
+  for (let index = 0; index < 4; index += 1) {
+    const angle = timestamp * 5 + index * (Math.PI / 2);
+    const inner = radius - 5;
+    const outer = radius + 4;
+    context.beginPath();
+    context.moveTo(actor.x + Math.cos(angle) * inner, actor.y + Math.sin(angle) * inner);
+    context.lineTo(actor.x + Math.cos(angle + 0.2) * outer, actor.y + Math.sin(angle + 0.2) * outer);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawPopEffect(
+  context: CanvasRenderingContext2D,
+  actor: ActorSnapshot,
+  image: HTMLImageElement | null,
+  takedownProgress: number,
+) {
+  const localProgress = clamp(
+    (takedownProgress - POP_EFFECT_START_PROGRESS) / (1 - POP_EFFECT_START_PROGRESS),
+    0,
+    0.999,
+  );
+  const frameIndex = Math.min(POP_SPRITE_FRAME_COUNT - 1, Math.floor(localProgress * POP_SPRITE_FRAME_COUNT));
+  const size = POP_EFFECT_DRAW_SIZE * (0.86 + localProgress * 0.22);
+
+  context.save();
+  context.translate(actor.x, actor.y);
+
+  if (image?.complete && image.naturalWidth > 0) {
+    context.imageSmoothingEnabled = true;
+    context.drawImage(
+      image,
+      frameIndex * POP_SPRITE_FRAME_SIZE,
+      0,
+      POP_SPRITE_FRAME_SIZE,
+      POP_SPRITE_FRAME_SIZE,
+      -size / 2,
+      -size / 2,
+      size,
+      size,
+    );
+  } else {
+    const burst = 1 - localProgress;
+    context.strokeStyle = `rgba(38, 116, 232, ${0.5 + burst * 0.4})`;
+    context.lineWidth = 3;
+    context.beginPath();
+    context.arc(0, 0, 18 + localProgress * 28, 0, Math.PI * 2);
+    context.stroke();
+
+    context.fillStyle = `rgba(255, 255, 255, ${0.55 * burst})`;
+    context.beginPath();
+    context.arc(0, 0, 12 + localProgress * 20, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  context.restore();
+}
+
+function drawRespawnEffect(
+  context: CanvasRenderingContext2D,
+  actor: ActorSnapshot,
+  image: HTMLImageElement | null,
+  respawnProgress: number,
+) {
+  const localProgress = clamp(respawnProgress, 0, 0.999);
+  const frameIndex = Math.min(RESPAWN_SPRITE_FRAME_COUNT - 1, Math.floor(localProgress * RESPAWN_SPRITE_FRAME_COUNT));
+  const size = RESPAWN_EFFECT_DRAW_SIZE;
+
+  context.save();
+  context.translate(actor.x, actor.y);
+
+  if (image?.complete && image.naturalWidth > 0) {
+    context.imageSmoothingEnabled = true;
+    context.drawImage(
+      image,
+      frameIndex * RESPAWN_SPRITE_FRAME_SIZE,
+      0,
+      RESPAWN_SPRITE_FRAME_SIZE,
+      RESPAWN_SPRITE_FRAME_SIZE,
+      -size / 2,
+      -size / 2,
+      size,
+      size,
+    );
+  } else {
+    context.strokeStyle = `rgba(38, 167, 232, ${0.55 * (1 - localProgress)})`;
+    context.lineWidth = 3;
+    context.beginPath();
+    context.arc(0, 0, 22 + localProgress * 18, 0, Math.PI * 2);
+    context.stroke();
+  }
+
+  context.restore();
 }
 
 function drawActorHighlight(
@@ -590,10 +1305,25 @@ function drawActorHighlight(
     isSelected: boolean;
     isGuess: boolean;
     isHuman: boolean;
+    isCountdownHighlight: boolean;
     reveal: boolean;
+    timestamp: number;
   },
 ) {
   const baseRadius = ACTOR_SPRITE_SIZE * 0.62;
+
+  if (!state.reveal && state.isCountdownHighlight) {
+    const pulse = (Math.sin(Date.now() / 1000 * 7 + state.timestamp) + 1) * 0.5;
+    drawRing(
+      context,
+      actor.x,
+      actor.y,
+      baseRadius + 9 + pulse * 2,
+      COLORS.item,
+      3.2,
+      `rgba(38, 116, 232, ${0.16 + pulse * 0.16})`,
+    );
+  }
 
   if (state.reveal && state.isGuess && state.isHuman) {
     drawRing(context, actor.x, actor.y, baseRadius + 8, COLORS.human, 5, "rgba(243, 165, 29, 0.32)");
@@ -799,4 +1529,8 @@ function drawImageCover(context: CanvasRenderingContext2D, image: HTMLImageEleme
 
 function glowPulse(time: number, offset: number): number {
   return (Math.sin(time * 4.2 + offset) + 1) * 0.5;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }

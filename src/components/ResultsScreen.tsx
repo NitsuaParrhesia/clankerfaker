@@ -32,10 +32,10 @@ export default function ResultsScreen({
         <div className="result-grid">
           <div>
             <span>Hide result</span>
-            <strong>{recording.outcome.humanWon ? "Scored enough" : "Short on points"}</strong>
+            <strong>{recording.outcome.humanWon ? "Task complete" : "Task incomplete"}</strong>
           </div>
           <div>
-            <span>Points scored</span>
+            <span>Task progress</span>
             <strong>
               {recording.outcome.humanCollected}/{recording.outcome.requiredItems}
             </strong>

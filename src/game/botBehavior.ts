@@ -3,8 +3,9 @@ import {
   BOT_BASE_SPEED,
   GAME_HEIGHT,
   GAME_WIDTH,
+  TASK_TARGET_RADIUS,
 } from "./constants";
-import type { Actor, BotPersonality, BotTargetKind, GameState, MapZoneId, Rect, Vector } from "./types";
+import type { Actor, BotPersonality, BotTargetKind, GameState, MapZoneId, Rect, TaskStep, Vector } from "./types";
 
 type PersonalityProfile = {
   speedMultiplier: number;
@@ -19,6 +20,7 @@ type PersonalityProfile = {
   actorWeight: number;
   decorWeight: number;
   loopWeight: number;
+  taskWeight: number;
 };
 
 const SIDE_ROOM_ZONES: MapZoneId[] = [
@@ -61,6 +63,7 @@ export const PERSONALITY_PROFILES: Record<BotPersonality, PersonalityProfile> = 
     actorWeight: 0.08,
     decorWeight: 0.26,
     loopWeight: 0.04,
+    taskWeight: 0.14,
   },
   "Task-focused": {
     speedMultiplier: 1.03,
@@ -75,6 +78,7 @@ export const PERSONALITY_PROFILES: Record<BotPersonality, PersonalityProfile> = 
     actorWeight: 0.04,
     decorWeight: 0.12,
     loopWeight: 0.02,
+    taskWeight: 0.46,
   },
   Hesitant: {
     speedMultiplier: 0.82,
@@ -89,6 +93,7 @@ export const PERSONALITY_PROFILES: Record<BotPersonality, PersonalityProfile> = 
     actorWeight: 0.06,
     decorWeight: 0.22,
     loopWeight: 0.03,
+    taskWeight: 0.22,
   },
   Curious: {
     speedMultiplier: 0.96,
@@ -103,6 +108,7 @@ export const PERSONALITY_PROFILES: Record<BotPersonality, PersonalityProfile> = 
     actorWeight: 0.22,
     decorWeight: 0.28,
     loopWeight: 0.04,
+    taskWeight: 0.22,
   },
   Looper: {
     speedMultiplier: 0.94,
@@ -117,6 +123,7 @@ export const PERSONALITY_PROFILES: Record<BotPersonality, PersonalityProfile> = 
     actorWeight: 0.03,
     decorWeight: 0.16,
     loopWeight: 0.34,
+    taskWeight: 0.18,
   },
   Efficient: {
     speedMultiplier: 1.12,
@@ -131,6 +138,7 @@ export const PERSONALITY_PROFILES: Record<BotPersonality, PersonalityProfile> = 
     actorWeight: 0.02,
     decorWeight: 0.1,
     loopWeight: 0.02,
+    taskWeight: 0.42,
   },
   Distracted: {
     speedMultiplier: 0.98,
@@ -145,6 +153,7 @@ export const PERSONALITY_PROFILES: Record<BotPersonality, PersonalityProfile> = 
     actorWeight: 0.14,
     decorWeight: 0.28,
     loopWeight: 0.03,
+    taskWeight: 0.18,
   },
 };
 
@@ -188,7 +197,7 @@ export function chooseBotTarget(
   actor: Actor,
   state: GameState,
   rng: () => number,
-): { target: Vector; kind: BotTargetKind; targetActorId?: string; targetZone?: MapZoneId } {
+): { target: Vector; kind: BotTargetKind; targetActorId?: string; targetTaskId?: string; targetZone?: MapZoneId } {
   const bot = actor.bot;
   if (!bot) {
     const target = randomOpenPoint(state, rng);
@@ -209,9 +218,18 @@ export function chooseBotTarget(
     }
   }
 
+  const taskPressure = getTaskPressure(actor, state);
+  if (taskPressure > 0 && rng() < taskPressure) {
+    const taskTarget = findPublicTaskTarget(actor, state, rng, preferredZone);
+    if (taskTarget) {
+      return taskTarget;
+    }
+  }
+
   const choice = weightedChoice(
     [
       ["item", profile.itemWeight],
+      ["task", profile.taskWeight],
       ["exit", profile.exitWeight],
       ["actor", profile.actorWeight],
       ["decor", profile.decorWeight],
@@ -220,6 +238,13 @@ export function chooseBotTarget(
     ],
     rng,
   );
+
+  if (choice === "task") {
+    const taskTarget = findPublicTaskTarget(actor, state, rng, preferredZone);
+    if (taskTarget) {
+      return taskTarget;
+    }
+  }
 
   if (choice === "item") {
     const item = findAppealingItem(actor, state, rng, preferredZone, actor.collected < bot.pointQuota);
@@ -384,6 +409,11 @@ function getPointQuotaPressure(actor: Actor, state: GameState): number {
     return 0;
   }
 
+  const collectStep = state.task.steps.find((step) => step.kind === "collect");
+  if (collectStep && actor.completedTaskIds.includes(collectStep.id)) {
+    return 0;
+  }
+
   const deficit = bot.pointQuota - actor.collected;
   let pressure = 0.68 + deficit * 0.08;
 
@@ -408,6 +438,107 @@ function getPointQuotaPressure(actor: Actor, state: GameState): number {
   }
 
   return clamp(pressure, 0.55, 0.97);
+}
+
+function getTaskPressure(actor: Actor, state: GameState): number {
+  const bot = actor.bot;
+  if (!bot) {
+    return 0;
+  }
+
+  const remaining = state.task.steps.filter((step) => !actor.completedTaskIds.includes(step.id));
+  if (remaining.length === 0) {
+    return 0;
+  }
+
+  let pressure = 0.5 + remaining.length * 0.1;
+
+  if (state.timeElapsed > 10) {
+    pressure += 0.08;
+  }
+
+  if (state.timeElapsed > 20) {
+    pressure += 0.1;
+  }
+
+  if (bot.personality === "Task-focused" || bot.personality === "Efficient") {
+    pressure += 0.1;
+  }
+
+  if (bot.personality === "Wanderer" || bot.personality === "Distracted") {
+    pressure -= 0.06;
+  }
+
+  return clamp(pressure, 0.34, 0.9);
+}
+
+function findPublicTaskTarget(
+  actor: Actor,
+  state: GameState,
+  rng: () => number,
+  preferredZone?: MapZoneId,
+): { target: Vector; kind: BotTargetKind; targetTaskId?: string; targetZone?: MapZoneId } | undefined {
+  const remaining = state.task.steps.filter((step) => !actor.completedTaskIds.includes(step.id));
+  if (remaining.length === 0) {
+    return undefined;
+  }
+
+  const collectStep = remaining.find((step) => step.kind === "collect");
+  if (collectStep) {
+    const item = findAppealingItem(actor, state, rng, preferredZone, true);
+    if (item) {
+      return {
+        target: item.position,
+        kind: "item",
+        targetTaskId: collectStep.id,
+        targetZone: getMapZoneForPoint(item.position, state),
+      };
+    }
+  }
+
+  const options = remaining
+    .filter((step) => step.kind !== "collect")
+    .map((step) => {
+      const target = randomTaskPoint(step, state, rng, preferredZone);
+      const zone = getMapZoneForPoint(target, state);
+      const zoneBonus = zone && zone === preferredZone ? -70 : 0;
+      const distanceScore = distance(actor.position, target);
+      return { step, target, zone, score: distanceScore + zoneBonus + rng() * 80 };
+    })
+    .sort((a, b) => a.score - b.score);
+
+  const choice = options[Math.floor(rng() * Math.min(2, options.length))] ?? options[0];
+  if (!choice) {
+    return undefined;
+  }
+
+  return {
+    target: choice.target,
+    kind: "task",
+    targetTaskId: choice.step.id,
+    targetZone: choice.zone,
+  };
+}
+
+function randomTaskPoint(step: TaskStep, state: GameState, rng: () => number, fallbackZone?: MapZoneId): Vector {
+  if (step.rect) {
+    return {
+      x: step.rect.x + step.rect.width * (0.18 + rng() * 0.64),
+      y: step.rect.y + step.rect.height * (0.28 + rng() * 0.44),
+    };
+  }
+
+  if (step.position) {
+    const radius = Math.max(10, (step.radius ?? TASK_TARGET_RADIUS) * 0.45);
+    const angle = rng() * Math.PI * 2;
+    const gap = rng() * radius;
+    return {
+      x: clamp(step.position.x + Math.cos(angle) * gap, ACTOR_RADIUS + 8, GAME_WIDTH - ACTOR_RADIUS - 8),
+      y: clamp(step.position.y + Math.sin(angle) * gap, ACTOR_RADIUS + 8, GAME_HEIGHT - ACTOR_RADIUS - 8),
+    };
+  }
+
+  return randomOpenPoint(state, rng, fallbackZone);
 }
 
 function pickNextRoamZone(actor: Actor, state: GameState, rng: () => number): MapZoneId {

@@ -1,16 +1,21 @@
+import { SWEEPER_RESPAWN_EFFECT_DURATION, SWEEPER_STUN_DURATION } from "./constants";
 import type {
   Actor,
   ActorSnapshot,
+  AlarmSnapshot,
   BotBrain,
   BotDebugSnapshot,
   GameState,
   ItemSnapshot,
   ReplayRecording,
   ReplaySnapshot,
+  SweeperSnapshot,
   Vector,
 } from "./types";
 
 export function createSnapshot(state: GameState): ReplaySnapshot {
+  const humanActor = state.actors.find((actor) => actor.id === state.humanActorId);
+
   return {
     timestamp: Number(state.timeElapsed.toFixed(3)),
     actors: state.actors.map<ActorSnapshot>((actor) => ({
@@ -20,6 +25,9 @@ export function createSnapshot(state: GameState): ReplaySnapshot {
       y: Number(actor.position.y.toFixed(2)),
       heading: Number(actor.heading.toFixed(4)),
       collected: actor.collected,
+      stunned: state.timeElapsed < actor.stunnedUntil,
+      takedownProgress: getTakedownProgress(state, actor),
+      respawnProgress: getRespawnProgress(state, actor),
       bot: createBotDebugSnapshot(actor),
     })),
     items: state.items.map<ItemSnapshot>((item) => ({
@@ -30,7 +38,11 @@ export function createSnapshot(state: GameState): ReplaySnapshot {
     })),
     humanCollected: state.humanCollected,
     objectiveReady: state.humanCollected >= state.requiredItems,
+    completedTaskIds: humanActor ? [...humanActor.completedTaskIds] : [],
     status: state.status,
+    alarm: createAlarmSnapshot(state),
+    sweeper: createSweeperSnapshot(state.sweeper),
+    sweepers: createSweeperSnapshots(state),
   };
 }
 
@@ -43,12 +55,14 @@ export function createRecording(state: GameState, snapshots: ReplaySnapshot[]): 
     duration,
     humanActorId: state.humanActorId,
     requiredItems: state.requiredItems,
+    task: state.task,
     outcome: {
       humanWon: state.status === "human-won",
       duration,
       humanCollected: state.humanCollected,
       requiredItems: state.requiredItems,
       botCollections: state.botCollections,
+      taskTitle: state.task.title,
       reason: state.status === "human-won" ? "scored" : "timeout",
     },
     map: state.mapLayer,
@@ -97,20 +111,151 @@ export function getReplayFrame(recording: ReplayRecording, time: number): Replay
         return actor;
       }
 
+      const jumpDistance = Math.hypot(next.x - actor.x, next.y - actor.y);
+      const takedownProgress = lerp(actor.takedownProgress ?? 0, next.takedownProgress ?? 0, t);
+      const respawnProgress = lerp(actor.respawnProgress ?? 0, next.respawnProgress ?? 0, t);
+      const isRespawnJump =
+        jumpDistance > 90 &&
+        (actor.stunned ||
+          next.stunned ||
+          (actor.takedownProgress ?? 0) > 0 ||
+          (next.takedownProgress ?? 0) > 0 ||
+          (next.respawnProgress ?? 0) > 0);
+
+      if (isRespawnJump) {
+        const source = t > 0.5 ? next : actor;
+        return {
+          ...source,
+          bot: cloneBotDebugSnapshot(source.bot),
+        };
+      }
+
       return {
         ...actor,
         x: lerp(actor.x, next.x, t),
         y: lerp(actor.y, next.y, t),
         heading: lerpAngle(actor.heading, next.heading, t),
         collected: t > 0.5 ? next.collected : actor.collected,
+        stunned: t > 0.5 ? next.stunned : actor.stunned,
+        takedownProgress,
+        respawnProgress,
         bot: cloneBotDebugSnapshot(t > 0.5 ? next.bot : actor.bot),
       };
     }),
     items: t < 0.5 ? before.items : after.items,
     humanCollected: t > 0.5 ? after.humanCollected : before.humanCollected,
     objectiveReady: t > 0.5 ? after.objectiveReady : before.objectiveReady,
+    completedTaskIds: t > 0.5 ? after.completedTaskIds : before.completedTaskIds,
     status: t > 0.5 ? after.status : before.status,
+    alarm: interpolateAlarmSnapshot(before.alarm, after.alarm, t),
+    sweeper: interpolateSweeperSnapshot(before.sweeper, after.sweeper, t),
+    sweepers: interpolateSweeperSnapshots(before.sweepers, after.sweepers, t),
   };
+}
+
+function getTakedownProgress(state: GameState, actor: Actor): number {
+  if (actor.respawnAt <= state.timeElapsed || actor.respawnAt <= 0) {
+    return 0;
+  }
+
+  const startedAt = actor.respawnAt - SWEEPER_STUN_DURATION;
+  return Number(clamp((state.timeElapsed - startedAt) / SWEEPER_STUN_DURATION, 0, 1).toFixed(3));
+}
+
+function getRespawnProgress(state: GameState, actor: Actor): number {
+  if (actor.respawnEffectUntil <= state.timeElapsed || actor.respawnEffectUntil <= 0) {
+    return 0;
+  }
+
+  const startedAt = actor.respawnEffectUntil - SWEEPER_RESPAWN_EFFECT_DURATION;
+  return Number(clamp((state.timeElapsed - startedAt) / SWEEPER_RESPAWN_EFFECT_DURATION, 0, 1).toFixed(3));
+}
+
+export function createAlarmSnapshot(state: GameState): AlarmSnapshot | null {
+  const { alarm } = state;
+
+  if (alarm.phase === "warning") {
+    return {
+      lightId: alarm.lightId,
+      phase: alarm.phase,
+      progress: clamp((state.timeElapsed - alarm.warningAt) / Math.max(0.001, alarm.activeAt - alarm.warningAt), 0, 1),
+    };
+  }
+
+  if (alarm.phase === "active") {
+    return {
+      lightId: alarm.lightId,
+      phase: alarm.phase,
+      progress: clamp((state.timeElapsed - alarm.activeAt) / Math.max(0.001, alarm.endsAt - alarm.activeAt), 0, 1),
+    };
+  }
+
+  return null;
+}
+
+export function createSweeperSnapshots(state: GameState): SweeperSnapshot[] {
+  return state.sweepers.map((sweeper) => createSweeperSnapshot(sweeper));
+}
+
+export function createSweeperSnapshot(sweeper: GameState["sweeper"]): SweeperSnapshot {
+  return {
+    id: sweeper.id,
+    x: Number(sweeper.position.x.toFixed(2)),
+    y: Number(sweeper.position.y.toFixed(2)),
+    heading: Number(sweeper.heading.toFixed(4)),
+  };
+}
+
+function interpolateAlarmSnapshot(
+  before: AlarmSnapshot | null,
+  after: AlarmSnapshot | null,
+  t: number,
+): AlarmSnapshot | null {
+  if (before && after && before.lightId === after.lightId && before.phase === after.phase) {
+    return {
+      ...before,
+      progress: lerp(before.progress, after.progress, t),
+    };
+  }
+
+  return t > 0.5 ? after : before;
+}
+
+function interpolateSweeperSnapshot(
+  before: SweeperSnapshot | null,
+  after: SweeperSnapshot | null,
+  t: number,
+): SweeperSnapshot | null {
+  if (!before || !after || before.id !== after.id) {
+    return t > 0.5 ? after : before;
+  }
+
+  return {
+    id: before.id,
+    x: lerp(before.x, after.x, t),
+    y: lerp(before.y, after.y, t),
+    heading: lerpAngle(before.heading, after.heading, t),
+  };
+}
+
+function interpolateSweeperSnapshots(
+  before: SweeperSnapshot[] | undefined,
+  after: SweeperSnapshot[] | undefined,
+  t: number,
+): SweeperSnapshot[] | undefined {
+  if (!before && !after) {
+    return undefined;
+  }
+
+  const beforeList = before ?? [];
+  const afterList = after ?? [];
+  const ids = new Set([...beforeList.map((sweeper) => sweeper.id), ...afterList.map((sweeper) => sweeper.id)]);
+
+  return [...ids].map((id) => {
+    const beforeSweeper = beforeList.find((sweeper) => sweeper.id === id) ?? null;
+    const afterSweeper = afterList.find((sweeper) => sweeper.id === id) ?? null;
+    return interpolateSweeperSnapshot(beforeSweeper, afterSweeper, t) ?? beforeSweeper ?? afterSweeper;
+  }).filter((sweeper): sweeper is SweeperSnapshot => Boolean(sweeper));
 }
 
 export function createBotDebugSnapshot(actor: Actor): BotDebugSnapshot | undefined {
@@ -128,6 +273,7 @@ function snapshotBotBrain(bot: BotBrain): BotDebugSnapshot {
     state: getBotState(bot),
     target: { ...bot.target },
     finalTarget: { ...bot.finalTarget },
+    targetTaskId: bot.targetTaskId,
     path: bot.path.map((point) => ({ ...point })),
     pathIndex: bot.pathIndex,
     targetZone: bot.targetZone,
@@ -230,4 +376,8 @@ function lerpAngle(a: number, b: number, t: number): number {
 
 function normalizeAngle(angle: number): number {
   return Math.atan2(Math.sin(angle), Math.cos(angle));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }

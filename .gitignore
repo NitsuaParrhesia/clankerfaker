@@ -1,6 +1,10 @@
 node_modules/
 dist/
 *.tsbuildinfo
+.wrangler/
+.agents/
+.codex/
 vite-dev*.log
+.codex-vite*.log
 vite.config.js
 vite.config.d.ts
