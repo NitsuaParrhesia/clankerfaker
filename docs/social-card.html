@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Clanker Faker social card</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: Arial, Helvetica, sans-serif; color: #172026; }
+      main { width: 1200px; height: 630px; position: relative; overflow: hidden; background: #edf2f5; }
+      .brand { position: absolute; top: 48px; left: 52px; display: flex; gap: 15px; align-items: center; font-size: 30px; font-weight: 900; letter-spacing: -1px; }
+      .brand img { width: 72px; height: 72px; object-fit: contain; }
+      .eyebrow { position: absolute; left: 56px; top: 180px; margin: 0; font-size: 12px; font-weight: 800; letter-spacing: 1.6px; color: #337c70; }
+      h1 { position: absolute; left: 52px; top: 222px; margin: 0; font-size: 56px; line-height: 1.06; letter-spacing: -2.8px; }
+      .description { position: absolute; top: 374px; left: 56px; margin: 0; font-size: 22px; line-height: 1.5; color: #5c696c; }
+      .url { position: absolute; bottom: 64px; left: 56px; display: flex; align-items: center; gap: 13px; padding: 17px 22px; border-radius: 12px; color: white; background: #172026; font-size: 20px; font-weight: 700; }
+      .url span { color: #77ddc4; }
+      .board { position: absolute; top: 48px; right: 42px; width: 530px; height: 530px; padding: 10px; background: white; border-radius: 22px; box-shadow: 0 22px 52px #18252e30; }
+      .field { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: 12px; }
+      /* Frame the actual 846px canvas within the unedited 1350px screenshot. */
+      .field img { position: absolute; width: 159.574468%; height: auto; max-width: none; left: -11.347518%; top: -19.976359%; }
+      .badge { position: absolute; right: 29px; bottom: -17px; padding: 13px 18px; border: 5px solid #edf2f5; border-radius: 12px; background: #f4c860; font-size: 13px; font-weight: 900; letter-spacing: 1px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand"><img src="../public/assets/robot.webp" alt="" /><div>Clanker Faker</div></div>
+      <p class="eyebrow">A BROWSER SOCIAL DEDUCTION GAME</p>
+      <h1>Act like a bot.<br />Catch the human.</h1>
+      <p class="description">Blend in with ten bots.<br />Then challenge someone to find you.</p>
+      <div class="url"><span>▶</span> clankerfaker.com</div>
+      <div class="board"><div class="field"><img src="./gameplay.jpg" alt="Clanker Faker replay, with the selected bot's route highlighted" /></div><div class="badge">ONE OF THEM IS YOU.</div></div>
+    </main>
+  </body>
+</html>

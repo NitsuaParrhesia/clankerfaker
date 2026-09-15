@@ -1,5 +1,5 @@
 import { Flag, Play, RotateCcw, Timer } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { COUNTDOWN_SECONDS, REQUIRED_ITEMS, SNAPSHOT_INTERVAL } from "../game/constants";
 import { createRecording, createSnapshot } from "../game/replay";
 import {
@@ -10,10 +10,12 @@ import {
 } from "../game/simulation";
 import type { GameState, InputState, ReplayRecording, ReplaySnapshot, TaskStepKind } from "../game/types";
 import GameCanvas from "./GameCanvas";
+import Modal from "./Modal";
 
 type HidePhaseProps = {
   onComplete: (recording: ReplayRecording) => void;
   onRestart: () => void;
+  onCancel: () => void;
 };
 
 type MovementInputKey = "up" | "down" | "left" | "right";
@@ -41,7 +43,7 @@ const INITIAL_INPUT: InputState = {
 const JOYSTICK_RADIUS = 34;
 const JOYSTICK_DEAD_ZONE = 0.12;
 
-export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
+export default function HidePhase({ onComplete, onRestart, onCancel }: HidePhaseProps) {
   const [renderState, setRenderState] = useState<GameState>(() => createInitialGame());
   const [countdownRemaining, setCountdownRemaining] = useState(COUNTDOWN_SECONDS);
   const [objectiveBriefOpen, setObjectiveBriefOpen] = useState(true);
@@ -58,6 +60,7 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
   const finishedRef = useRef(false);
   const onCompleteRef = useRef(onComplete);
   const joystickActiveRef = useRef(false);
+  const gameHeadingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     onCompleteRef.current = onComplete;
@@ -65,6 +68,12 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
 
   useEffect(() => {
     function setKey(event: KeyboardEvent, isDown: boolean) {
+      if (
+        !countdownArmedRef.current ||
+        (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"], dialog'))
+      ) {
+        return;
+      }
       if (event.key.toLowerCase() === "x" && isDown && !event.repeat) {
         event.preventDefault();
         setDebugOverlay((value) => !value);
@@ -82,13 +91,25 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
 
     const handleKeyDown = (event: KeyboardEvent) => setKey(event, true);
     const handleKeyUp = (event: KeyboardEvent) => setKey(event, false);
+    const resetInput = () => {
+      inputRef.current = { ...INITIAL_INPUT };
+      joystickActiveRef.current = false;
+      setJoystick({ x: 0, y: 0, active: false });
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) resetInput();
+    };
 
     window.addEventListener("keydown", handleKeyDown, { passive: false });
     window.addEventListener("keyup", handleKeyUp, { passive: false });
+    window.addEventListener("blur", resetInput);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", resetInput);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -162,6 +183,7 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
   const roundStarted = !objectiveBriefOpen && countdownRemaining <= 0;
 
   function handleStartCountdown() {
+    inputRef.current = { ...INITIAL_INPUT };
     countdownArmedRef.current = true;
     countdownStartedAtRef.current = null;
     setCountdownRemaining(COUNTDOWN_SECONDS);
@@ -224,7 +246,7 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
     <main className="screen play-screen play-screen--hide">
       <section className="game-stage">
         <div className="top-bar">
-          {!roundStarted ? <h2>Clanker {human.label} is yours</h2> : <span aria-hidden="true" />}
+          {!roundStarted ? <h2 ref={gameHeadingRef} tabIndex={-1}>Clanker {human.label} is yours</h2> : <span aria-hidden="true" />}
           <div className="stat-strip" aria-label="Round status">
             <span title="Time remaining">
               <Timer size={18} aria-hidden="true" />
@@ -250,7 +272,13 @@ export default function HidePhase({ onComplete, onRestart }: HidePhaseProps) {
             countdownHighlightActorId={!roundStarted ? human.id : null}
           />
           {objectiveBriefOpen && (
-            <ObjectiveBriefModal actorLabel={human.label} state={renderState} onStart={handleStartCountdown} />
+            <ObjectiveBriefModal
+              actorLabel={human.label}
+              state={renderState}
+              onStart={handleStartCountdown}
+              onCancel={onCancel}
+              returnFocusRef={gameHeadingRef}
+            />
           )}
           {countdownActive && (
             <div className="countdown-overlay" aria-live="polite">
@@ -357,16 +385,20 @@ function ObjectiveBriefModal({
   actorLabel,
   state,
   onStart,
+  onCancel,
+  returnFocusRef,
 }: {
   actorLabel: number;
   state: GameState;
   onStart: () => void;
+  onCancel: () => void;
+  returnFocusRef: RefObject<HTMLHeadingElement | null>;
 }) {
   return (
-    <div className="objective-brief-overlay" role="presentation">
-      <section className="objective-brief" role="dialog" aria-modal="true" aria-labelledby="objective-brief-title">
+    <Modal className="objective-brief" labelledBy="objective-brief-title" onDismiss={onCancel} returnFocusRef={returnFocusRef}>
+      <div className="game-dialog__content">
         <p className="eyebrow">Your objective</p>
-        <h1 id="objective-brief-title">Clanker {actorLabel}, complete the task.</h1>
+        <h1 id="objective-brief-title" tabIndex={-1} data-modal-focus>Clanker {actorLabel}, complete the task.</h1>
         <p>
           Collect three tokens and complete one public task before the clock runs out.
         </p>
@@ -379,13 +411,15 @@ function ObjectiveBriefModal({
             </li>
           ))}
         </ol>
-
+      </div>
+      <div className="game-dialog__actions">
         <button className="primary-button objective-brief__start" type="button" onClick={onStart}>
           <Play size={20} aria-hidden="true" />
           Start Countdown
         </button>
-      </section>
-    </div>
+        <button className="secondary-button" type="button" onClick={onCancel}>Back to Lobby</button>
+      </div>
+    </Modal>
   );
 }
 

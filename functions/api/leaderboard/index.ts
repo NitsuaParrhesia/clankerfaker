@@ -1,7 +1,3 @@
-type Env = {
-  REPLAY_DB: D1Database;
-};
-
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 10;
 const LEGACY_DEFAULT_DISPLAY_NAME_PATTERN = /^Clanker [A-Z0-9]{4}$/u;

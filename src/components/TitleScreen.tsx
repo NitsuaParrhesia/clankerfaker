@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { loadLeaderboard, type Leaderboard, type LeaderboardEntry } from "../game/leaderboard";
 import { getLocalProfile, resolveProfileDisplayName } from "../game/profile";
 import { loadLocalProfileStats, type ProfileStats } from "../game/profileStats";
+import Modal from "./Modal";
 
 type TitleScreenProps = {
   onStart: () => void;
@@ -78,7 +79,7 @@ export default function TitleScreen({ onStart, onReview, onLeaderboard }: TitleS
     <main className="screen title-screen">
       <section className="title-lobby">
         <div className="title-hero">
-          <img className="title-logo" src="/assets/logo.png" alt="Clanker Faker" />
+          <img className="title-logo" src="/assets/logo.webp" alt="Clanker Faker" width="720" height="720" />
           <div className="title-copy">
             <h1 className="title-tagline">One of these clankers is human. Can you spot them?</h1>
             <p className="lead">Act normal. Complete the task. Fool the replay reviewers.</p>
@@ -105,14 +106,14 @@ export default function TitleScreen({ onStart, onReview, onLeaderboard }: TitleS
         <section className="profile-record-card" aria-label="Your Clanker record">
           <div className="profile-record-card__hero">
             <span className="profile-record-card__avatar" aria-hidden="true">
-              <img src="/assets/robot.png" alt="" />
+              <img src="/assets/robot.webp" alt="" />
             </span>
             <div className="profile-record-card__header">
               <p className="eyebrow">Your Clanker Record</p>
               <strong>{displayName}</strong>
             </div>
             <span className="profile-record-card__token" aria-hidden="true">
-              <img src="/assets/token.png" alt="" />
+              <img src="/assets/token.webp" alt="" />
             </span>
           </div>
           <div className="profile-rating-row">
@@ -199,29 +200,24 @@ function HowToPlayModal({
   onStart: () => void;
   onReview: () => void;
 }) {
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
   return (
-    <div className="how-to-play-backdrop" role="presentation">
-      <section className="how-to-play-modal" role="dialog" aria-modal="true" aria-labelledby="how-to-play-title">
+    <Modal className="how-to-play-modal" labelledBy="how-to-play-title" onDismiss={onClose}>
+      <div className="game-dialog__content">
         <div className="how-to-play-modal__top">
           <div>
             <p className="eyebrow">Quick start</p>
-            <h1 id="how-to-play-title">Act like a bot. Catch the human.</h1>
+            <h1 id="how-to-play-title" tabIndex={-1} data-modal-focus>Act like a bot. Catch the human.</h1>
             <p className="how-to-play-modal__lead">
               Clanker Faker has two jobs: hide in the replay, or watch the replay and call out the fake.
             </p>
           </div>
-          <button className="icon-button how-to-play-modal__close" type="button" title="Close" onClick={onClose}>
+          <button
+            className="icon-button how-to-play-modal__close"
+            type="button"
+            aria-label="Close how to play"
+            title="Close"
+            onClick={onClose}
+          >
             <X size={19} aria-hidden="true" />
           </button>
         </div>
@@ -229,7 +225,7 @@ function HowToPlayModal({
         <div className="how-to-play-guide">
           <section className="how-to-play-card">
             <div className="how-to-play-card__header">
-              <HowToPlayCardAsset src="/assets/robot.png" alt="" />
+              <HowToPlayCardAsset src="/assets/robot.webp" alt="" />
               <div>
                 <p className="eyebrow">Faker</p>
                 <h2>Be a Clanker</h2>
@@ -244,7 +240,7 @@ function HowToPlayModal({
 
           <section className="how-to-play-card">
             <div className="how-to-play-card__header">
-              <HowToPlayCardAsset src="/assets/robot.png" alt="" variant="suspect" />
+              <HowToPlayCardAsset src="/assets/robot.webp" alt="" variant="suspect" />
               <div>
                 <p className="eyebrow">Spotter</p>
                 <h2>Spot a Faker</h2>
@@ -265,40 +261,39 @@ function HowToPlayModal({
           </div>
           <div className="how-to-play-mechanic-grid">
             <HowToPlayMechanic
-              asset={{ src: "/assets/token.png", alt: "Token collectible" }}
+              asset={{ src: "/assets/token.webp", alt: "Token collectible" }}
               title="Tokens"
               copy="Collect three tokens while making the route look routine."
             />
             <HowToPlayMechanic
-              asset={{ src: "/assets/red-alarm-light-on.png", alt: "Red alarm light" }}
+              asset={{ src: "/assets/red-alarm-light-on.webp", alt: "Red alarm light" }}
               title="Alarm lights"
               copy="When a corner alarm flashes, the bots drift toward that corner."
             />
             <HowToPlayMechanic
-              asset={{ src: "/assets/stun-bot.png", alt: "Enemy sweeper bot" }}
+              asset={{ src: "/assets/stun-bot.webp", alt: "Enemy sweeper bot" }}
               title="Enemy sweepers"
               copy="If a sweeper catches a clanker, it gets stunned, pops, and respawns with no points."
             />
             <HowToPlayMechanic
-              asset={{ src: "/assets/tree-hideout.png", alt: "Tree hideout" }}
+              asset={{ src: "/assets/tree-hideout.webp", alt: "Tree hideout" }}
               title="Tree hideout"
               copy="Step behind the canopy to vanish briefly, then re-enter the crowd cleanly."
             />
           </div>
         </section>
-
-        <div className="how-to-play-modal__actions">
-          <button className="secondary-button" type="button" onClick={onReview}>
-            <Search size={18} aria-hidden="true" />
-            Spot a Faker
-          </button>
-          <button className="primary-button" type="button" onClick={onStart}>
-            <Play size={18} aria-hidden="true" />
-            Be a Clanker
-          </button>
-        </div>
-      </section>
-    </div>
+      </div>
+      <div className="game-dialog__actions how-to-play-modal__actions">
+        <button className="secondary-button" type="button" onClick={onReview}>
+          <Search size={18} aria-hidden="true" />
+          Spot a Faker
+        </button>
+        <button className="primary-button" type="button" onClick={onStart}>
+          <Play size={18} aria-hidden="true" />
+          Be a Clanker
+        </button>
+      </div>
+    </Modal>
   );
 }
 

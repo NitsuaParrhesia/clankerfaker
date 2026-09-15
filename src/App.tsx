@@ -219,7 +219,7 @@ export default function App() {
         <LeaderboardScreen onStart={startHidePhase} onReview={() => startPooledReplay(null)} />
       )}
       {phase === "hide" && (
-        <HidePhase key={hideRunKey} onComplete={handleHideComplete} onRestart={startHidePhase} />
+        <HidePhase key={hideRunKey} onComplete={handleHideComplete} onRestart={startHidePhase} onCancel={showTitleScreen} />
       )}
       {phase === "invalid-run" && recording && (
         <InvalidRunScreen recording={recording} onRestartRun={startHidePhase} />
@@ -265,7 +265,7 @@ function AppHeader({ currentPhase, onHome, onStartRun, onSpotFaker, onLeaderboar
   return (
     <header className="app-header" aria-label="Clanker Faker navigation">
       <button className="app-header__brand" type="button" aria-label="Clanker Faker home" onClick={onHome}>
-        <img src="/assets/robot.png" alt="" aria-hidden="true" />
+        <img src="/assets/robot.webp" alt="" aria-hidden="true" />
         <span>Clanker Faker</span>
       </button>
       <nav className="app-header__nav" aria-label="Game navigation">

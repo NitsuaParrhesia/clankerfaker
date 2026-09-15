@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import facilityMapUrl from "../assets/facility-map.png";
+import facilityMapUrl from "../assets/facility-map.webp";
 import { createSnapshot } from "../game/replay";
 import {
   ACTOR_RADIUS,
@@ -119,7 +119,7 @@ export default function GameCanvas(props: GameCanvasProps) {
         setItemImage(image);
       }
     };
-    image.src = "/assets/token.png";
+    image.src = "/assets/token.webp";
 
     return () => {
       cancelled = true;
@@ -134,7 +134,7 @@ export default function GameCanvas(props: GameCanvasProps) {
         setRespawnImage(image);
       }
     };
-    image.src = "/assets/clanker-respawn-sprite.png?v=2";
+    image.src = "/assets/clanker-respawn-sprite.webp";
 
     return () => {
       cancelled = true;
@@ -149,7 +149,7 @@ export default function GameCanvas(props: GameCanvasProps) {
         setStunImage(image);
       }
     };
-    image.src = "/assets/clanker-stun-sprite.png?v=1";
+    image.src = "/assets/clanker-stun-sprite.webp";
 
     return () => {
       cancelled = true;
@@ -164,7 +164,7 @@ export default function GameCanvas(props: GameCanvasProps) {
         setPopImage(image);
       }
     };
-    image.src = "/assets/clanker-pop-sprite.png";
+    image.src = "/assets/clanker-pop-sprite.webp";
 
     return () => {
       cancelled = true;
@@ -179,7 +179,7 @@ export default function GameCanvas(props: GameCanvasProps) {
         setAlarmLightOffImage(image);
       }
     };
-    image.src = "/assets/red-alarm-light-off.png";
+    image.src = "/assets/red-alarm-light-off.webp";
 
     return () => {
       cancelled = true;
@@ -194,7 +194,7 @@ export default function GameCanvas(props: GameCanvasProps) {
         setAlarmLightOnImage(image);
       }
     };
-    image.src = "/assets/red-alarm-light-on.png";
+    image.src = "/assets/red-alarm-light-on.webp";
 
     return () => {
       cancelled = true;
@@ -209,7 +209,7 @@ export default function GameCanvas(props: GameCanvasProps) {
         setAlarmLightGlowImage(image);
       }
     };
-    image.src = "/assets/red-alarm-light-glow.png";
+    image.src = "/assets/red-alarm-light-glow.webp";
 
     return () => {
       cancelled = true;
@@ -224,7 +224,7 @@ export default function GameCanvas(props: GameCanvasProps) {
         setRobotImage(image);
       }
     };
-    image.src = "/assets/robot.png";
+    image.src = "/assets/robot.webp";
 
     return () => {
       cancelled = true;
@@ -239,7 +239,7 @@ export default function GameCanvas(props: GameCanvasProps) {
         setSweeperImage(image);
       }
     };
-    image.src = "/assets/stun-bot.png";
+    image.src = "/assets/stun-bot.webp";
 
     return () => {
       cancelled = true;

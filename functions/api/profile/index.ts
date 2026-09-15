@@ -1,7 +1,3 @@
-type Env = {
-  REPLAY_DB: D1Database;
-};
-
 const PROFILE_ID_PATTERN = /^[A-Za-z0-9_-]{8,48}$/u;
 
 type ProfileRow = {

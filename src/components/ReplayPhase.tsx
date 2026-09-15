@@ -6,6 +6,7 @@ import { ReviewSubmissionError, submitReviewGuess } from "../game/reviews";
 import type { ReviewResult } from "../game/reviews";
 import type { ActorSnapshot, AlarmSnapshot, MapLayer, Rect, ReplayRecording, Vector } from "../game/types";
 import GameCanvas from "./GameCanvas";
+import Modal from "./Modal";
 
 type ReplayPhaseProps = {
   recording: ReplayRecording;
@@ -63,10 +64,11 @@ export default function ReplayPhase({
   const [reviewSaveState, setReviewSaveState] = useState<ReviewSaveState>("idle");
   const [reviewResult, setReviewResult] = useState<ReviewResult | null>(null);
   const lastTickRef = useRef<number | null>(null);
+  const playButtonRef = useRef<HTMLButtonElement>(null);
   const frame = useMemo(() => getReplayFrame(recording, replayTime), [recording, replayTime]);
   const isRevealed = guessActorId != null;
   const isPreviewOnly = replayId == null && introKind == null;
-  const correctGuess = guessActorId === recording.humanActorId;
+  const correctGuess = reviewResult?.correct ?? guessActorId === recording.humanActorId;
   const selectedActor = selectedActorId ? findSnapshotActor(frame, selectedActorId) : undefined;
   const selectedActorIsVisible = selectedActor ? !isActorUnderCover(selectedActor, recording) : false;
   const visibleSelectedActor = selectedActorIsVisible ? selectedActor : undefined;
@@ -97,6 +99,7 @@ export default function ReplayPhase({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
       if (event.key.toLowerCase() === "x" && !event.repeat) {
         event.preventDefault();
         setDebugOverlay((value) => !value);
@@ -163,7 +166,7 @@ export default function ReplayPhase({
     void submitReviewGuess({ replayId, guessedActorId: visibleSelectedActorId })
       .then((result) => {
         setReviewResult(result);
-        setReviewSaveState(result.alreadySubmitted ? "duplicate" : "saved");
+        setReviewSaveState(result.selfReview ? "self-review" : result.alreadySubmitted ? "duplicate" : "saved");
       })
       .catch((error: unknown) => {
         setReviewResult(null);
@@ -220,13 +223,31 @@ export default function ReplayPhase({
           </div>
         </div>
 
-        <div className="canvas-shell">
+        <div
+          className="canvas-shell replay-field"
+          tabIndex={isRevealed ? -1 : 0}
+          role="group"
+          aria-label="Replay field"
+          aria-describedby={isRevealed ? undefined : "replay-keyboard-help"}
+          onKeyDown={(event) => {
+            if (isRevealed || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+            event.preventDefault();
+            const actors = frame.actors.filter((actor) => !isActorUnderCover(actor, recording));
+            if (!actors.length) return;
+            const currentIndex = actors.findIndex((actor) => actor.id === visibleSelectedActorId);
+            const direction = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+            const nextIndex = currentIndex < 0 ? (direction === 1 ? 0 : actors.length - 1)
+              : (currentIndex + direction + actors.length) % actors.length;
+            setIsPlaying(false);
+            setSelectedActorId(actors[nextIndex].id);
+          }}
+        >
           <GameCanvas
             mode="replay"
             recording={recording}
             frame={frame}
             selectedActorId={visibleSelectedActorId}
-            guessActorId={guessActorId}
+            guessActorId={reviewResult?.guessedActorId ?? guessActorId}
             humanActorId={recording.humanActorId}
             reveal={isRevealed}
             trailPoints={revealTrail}
@@ -237,6 +258,7 @@ export default function ReplayPhase({
 
         <div className="replay-controls" aria-label="Replay controls">
           <button
+            ref={playButtonRef}
             className="icon-button"
             type="button"
             title={isPlaying ? "Pause replay" : "Play replay"}
@@ -271,6 +293,7 @@ export default function ReplayPhase({
             onChange={(event) => handleScrub(event.target.value)}
           />
         </div>
+        {!isRevealed && <p className="replay-keyboard-help" id="replay-keyboard-help">Click a clanker to inspect it, or focus the replay field and use the arrow keys to select one.</p>}
       </section>
 
       <aside className="side-panel">
@@ -318,11 +341,11 @@ export default function ReplayPhase({
           <>
             <div className="side-section">
               <p className="panel-label">{isPreviewOnly ? "Preview" : "Accusation"}</p>
-              <strong>{visibleSelectedActor ? "Clanker selected" : "No clanker selected"}</strong>
+              <strong aria-live="polite">{visibleSelectedActor ? `Clanker ${visibleSelectedActor.label} selected` : "No clanker selected"}</strong>
               <p>
                 {isPreviewOnly
                   ? "Click clankers to study the run. Previewing your own replay does not submit guesses."
-                  : "Click a clanker on the replay canvas, then lock the guess."}
+                  : "Select a clanker on the replay field, then lock the guess."}
               </p>
             </div>
 
@@ -350,16 +373,11 @@ export default function ReplayPhase({
       </aside>
 
       {introOpen && (
-        <div className="challenge-modal-backdrop" role="presentation">
-          <section
-            className="challenge-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="challenge-modal-title"
-          >
+        <Modal className="challenge-modal" labelledBy="challenge-modal-title" onDismiss={handleStartChallenge} returnFocusRef={playButtonRef}>
+          <div className="game-dialog__content">
             {introKind === "challenge" ? (
               <>
-                <h1 id="challenge-modal-title">Someone is challenging you to spot their Clanker Faker</h1>
+                <h1 id="challenge-modal-title" tabIndex={-1} data-modal-focus>Someone is challenging you to spot their Clanker Faker</h1>
                 <p>
                   One of these bots was secretly controlled by a human. Their job was to finish a
                   public task in {ROUND_DURATION} seconds while blending in with the clankers.
@@ -371,7 +389,7 @@ export default function ReplayPhase({
               </>
             ) : (
               <>
-                <h1 id="challenge-modal-title">Spot the queued Clanker Faker</h1>
+                <h1 id="challenge-modal-title" tabIndex={-1} data-modal-focus>Spot the queued Clanker Faker</h1>
                 <p>
                   This replay came from another faker run. One clanker was secretly controlled by a
                   human trying to finish the public task without standing out.
@@ -379,12 +397,14 @@ export default function ReplayPhase({
                 <p>Watch the movement, scrub the timeline, and lock in the clanker that feels too human.</p>
               </>
             )}
+          </div>
+          <div className="game-dialog__actions">
             <button className="primary-button" type="button" onClick={handleStartChallenge}>
               <Play size={20} aria-hidden="true" />
               Watch Replay
             </button>
-          </section>
-        </div>
+          </div>
+        </Modal>
       )}
     </main>
   );
@@ -696,7 +716,7 @@ function getScoreFeedbackCopy(state: ReviewSaveState, correctGuess: boolean): st
         ? "You found them, but direct challenge links do not affect leaderboard ratings."
         : "The faker fooled you, but direct challenge links do not affect leaderboard ratings.";
     case "self-review":
-      return "This replay was not scored as a queue review. Use Spot a Faker to review queued runs.";
+      return "You recorded this replay, so your ratings and win totals stay unchanged. Use Spot a Faker to review someone else's run.";
     case "expired":
       return "This replay is no longer available for leaderboard scoring, but the reveal still works.";
     case "failed":

@@ -1,7 +1,3 @@
-type Env = {
-  REPLAY_DB: D1Database;
-};
-
 type ReplayRow = {
   token: string;
   expires_at: number;

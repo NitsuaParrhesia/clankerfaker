@@ -1,7 +1,3 @@
-type Env = {
-  REPLAY_DB: D1Database;
-};
-
 const REVIEW_ID_LENGTH = 12;
 const REVIEW_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
 const REPLAY_ID_PATTERN = /^[A-Za-z0-9_-]{6,32}$/u;
@@ -113,6 +109,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return jsonResponse({ error: "Replay cannot be scored." }, 409);
   }
 
+  const selfReview = replay.owner_profile_id === reviewerProfileId;
   const existing = await getExistingAttempt(env.REPLAY_DB, replayId, reviewerProfileId);
   if (existing) {
     const aggregate = await getReplayAggregate(env.REPLAY_DB, replayId);
@@ -125,6 +122,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       humanActorId: existing.human_actor_id,
       correct: existing.correct === 1,
       alreadySubmitted: true,
+      selfReview,
       createdAt: existing.created_at,
       aggregate,
       rating,
@@ -132,7 +130,6 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   }
 
   const correct = guessedActorId === replay.human_actor_id;
-  const selfReview = replay.owner_profile_id === reviewerProfileId;
   let reviewResult: InsertReviewResult;
 
   try {
@@ -167,6 +164,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       humanActorId: duplicate.human_actor_id,
       correct: duplicate.correct === 1,
       alreadySubmitted: true,
+      selfReview,
       createdAt: duplicate.created_at,
       aggregate,
       rating,
@@ -183,6 +181,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       humanActorId: replay.human_actor_id,
       correct,
       alreadySubmitted: false,
+      selfReview,
       createdAt: now,
       aggregate,
       rating: reviewResult.rating,
@@ -231,7 +230,7 @@ async function getCurrentReviewRating(
   ownerProfileId: string | null,
   reviewerProfileId: string,
 ): Promise<ReviewRating> {
-  if (!ownerProfileId) {
+  if (!ownerProfileId || ownerProfileId === reviewerProfileId) {
     return createUnratedReviewRating();
   }
 
@@ -259,7 +258,7 @@ async function getRatingAdjustment(
   reviewerProfileId: string,
   correct: boolean,
 ): Promise<ReviewRating> {
-  if (!ownerProfileId) {
+  if (!ownerProfileId || ownerProfileId === reviewerProfileId) {
     return createUnratedReviewRating();
   }
 
@@ -320,9 +319,21 @@ async function insertReviewWithFreshId(
     const id = createReviewId();
     const spotterWin = options.correct ? 1 : 0;
     const fakerWin = options.correct ? 0 : 1;
+    const scoredReview = options.selfReview ? 0 : 1;
 
     try {
       const statements = [
+        // A shared-link visitor may not have a server profile yet. Create it
+        // before the attempt's foreign key is checked, in the same transaction.
+        database
+          .prepare(
+            `INSERT INTO profiles (id, display_name, created_at, last_seen_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               display_name = COALESCE(excluded.display_name, profiles.display_name),
+               last_seen_at = excluded.last_seen_at`,
+          )
+          .bind(options.reviewerProfileId, options.displayName, options.now, options.now),
         database
           .prepare(
             `INSERT INTO review_attempts (
@@ -350,44 +361,31 @@ async function insertReviewWithFreshId(
           ),
         database
           .prepare(
-            `INSERT INTO profiles (
-              id,
-              display_name,
-              created_at,
-              last_seen_at,
-              replays_reviewed,
-              spotter_wins,
-              spotter_rating
-            ) VALUES (?, ?, ?, ?, 1, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               display_name = COALESCE(excluded.display_name, profiles.display_name),
-               last_seen_at = excluded.last_seen_at,
-               replays_reviewed = profiles.replays_reviewed + 1,
-               spotter_wins = profiles.spotter_wins + excluded.spotter_wins,
-               spotter_rating = MAX(?, profiles.spotter_rating + ?)`,
+            `UPDATE profiles SET
+               replays_reviewed = replays_reviewed + ?,
+               spotter_wins = spotter_wins + ?,
+               spotter_rating = MAX(?, spotter_rating + ?)
+             WHERE id = ?`,
           )
           .bind(
-            options.reviewerProfileId,
-            options.displayName,
-            options.now,
-            options.now,
-            spotterWin,
-            rating.spotterRating ?? BASE_RATING,
+            scoredReview,
+            spotterWin * scoredReview,
             MIN_RATING,
             rating.spotterDelta,
+            options.reviewerProfileId,
           ),
         database
           .prepare(
             `UPDATE replays
-             SET review_count = review_count + 1,
+             SET review_count = review_count + ?,
                  spotter_wins = spotter_wins + ?,
                  faker_wins = faker_wins + ?
              WHERE id = ?`,
           )
-          .bind(spotterWin, fakerWin, options.replayId),
+          .bind(scoredReview, spotterWin * scoredReview, fakerWin * scoredReview, options.replayId),
       ];
 
-      if (options.ownerProfileId) {
+      if (options.ownerProfileId && !options.selfReview) {
         statements.push(
           database
             .prepare(

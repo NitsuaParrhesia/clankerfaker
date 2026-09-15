@@ -40,6 +40,7 @@ export type ReviewResult = {
   humanActorId: string;
   correct: boolean;
   alreadySubmitted: boolean;
+  selfReview: boolean;
   createdAt: number;
   aggregate: ReviewAggregate;
   rating: ReviewRating;
@@ -103,6 +104,7 @@ export async function submitReviewGuess(options: {
     humanActorId: payload.humanActorId,
     correct: payload.correct,
     alreadySubmitted: payload.alreadySubmitted,
+    selfReview: payload.selfReview === true,
     createdAt: payload.createdAt,
     aggregate,
     rating,

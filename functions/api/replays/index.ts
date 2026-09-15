@@ -1,7 +1,3 @@
-type Env = {
-  REPLAY_DB: D1Database;
-};
-
 const REPLAY_ID_LENGTH = 10;
 const REPLAY_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
 const REPLAY_TOKEN_PREFIX = "gz.";
